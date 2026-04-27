@@ -7,7 +7,7 @@ import Button from '@/components/ui/Button';
 import TextField from '@/components/ui/TextField';
 
 export default function LoginScreen() {
-  const { signInWithGoogle, signInWithEmail } = useAuth();
+  const { signInWithGoogle, signInWithEmail, authError } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -19,7 +19,7 @@ export default function LoginScreen() {
     try {
       await signInWithGoogle();
     } catch (e: any) {
-      setError(e.message || 'Error al iniciar sesión con Google');
+      setError(authError || e.message || 'Error al iniciar sesión con Google');
     } finally {
       setLoading(false);
     }
