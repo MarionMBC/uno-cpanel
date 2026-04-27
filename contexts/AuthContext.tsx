@@ -2,12 +2,15 @@
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { auth, googleProvider } from '@/lib/firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, googleProvider, db } from '@/lib/firebase';
+import { AppUser } from '@/types';
 
-const ALLOWED_EMAILS = ['melchisedec.bustamante@gmail.com'];
+const SUPER_ADMIN_EMAIL = 'melchisedec.bustamante@gmail.com';
 
 interface AuthContextType {
   user: User | null;
+  appUser: AppUser | null;
   loading: boolean;
   authError: string;
   signInWithGoogle: () => Promise<void>;
@@ -19,16 +22,45 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [appUser, setAppUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState('');
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      if (u && !ALLOWED_EMAILS.includes(u.email || '')) {
-        signOut(auth);
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (u && u.email) {
+        // Look up user in Firestore
+        const userDoc = await getDoc(doc(db, 'users', u.email));
+        
+        if (userDoc.exists()) {
+          const userData = userDoc.data() as AppUser;
+          if (userData.status === 'activo') {
+            setUser(u);
+            setAppUser({ ...userData, uid: u.uid });
+            setLoading(false);
+            return;
+          }
+        } else if (u.email === SUPER_ADMIN_EMAIL) {
+           // Fallback if superadmin document is missing but they logged in
+           setUser(u);
+           setAppUser({
+             email: SUPER_ADMIN_EMAIL,
+             name: 'SuperAdmin',
+             roleId: 'admin',
+             status: 'activo',
+             uid: u.uid
+           });
+           setLoading(false);
+           return;
+        }
+
+        // If not found or inactive, reject
+        await signOut(auth);
         setUser(null);
+        setAppUser(null);
       } else {
-        setUser(u);
+        setUser(null);
+        setAppUser(null);
       }
       setLoading(false);
     });
@@ -38,7 +70,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signInWithGoogle = async () => {
     setAuthError('');
     const result = await signInWithPopup(auth, googleProvider);
-    if (!ALLOWED_EMAILS.includes(result.user.email || '')) {
+    if (!result.user.email) {
+      await signOut(auth);
+      setAuthError('Error: no se pudo obtener el correo.');
+      throw new Error('Sin correo');
+    }
+
+    const userDoc = await getDoc(doc(db, 'users', result.user.email));
+    if (!userDoc.exists() && result.user.email !== SUPER_ADMIN_EMAIL) {
       await signOut(auth);
       setAuthError('Tu cuenta no tiene acceso a este sistema. Contacta al administrador.');
       throw new Error('Acceso denegado');
@@ -47,10 +86,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithEmail = async (email: string, password: string) => {
     setAuthError('');
-    if (!ALLOWED_EMAILS.includes(email)) {
+    const userDoc = await getDoc(doc(db, 'users', email));
+    
+    if (!userDoc.exists() && email !== SUPER_ADMIN_EMAIL) {
       setAuthError('Tu cuenta no tiene acceso a este sistema. Contacta al administrador.');
       throw new Error('Acceso denegado');
     }
+    
+    if (userDoc.exists()) {
+       const data = userDoc.data() as AppUser;
+       if (data.status === 'inactivo') {
+         setAuthError('Tu cuenta ha sido desactivada. Contacta al administrador.');
+         throw new Error('Cuenta inactiva');
+       }
+    }
+
     const { signInWithEmailAndPassword } = await import('firebase/auth');
     await signInWithEmailAndPassword(auth, email, password);
   };
@@ -60,7 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, authError, signInWithGoogle, signInWithEmail, logout }}>
+    <AuthContext.Provider value={{ user, appUser, loading, authError, signInWithGoogle, signInWithEmail, logout }}>
       {children}
     </AuthContext.Provider>
   );

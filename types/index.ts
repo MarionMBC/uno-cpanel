@@ -55,11 +55,32 @@ export interface DailyReading {
   closedAt?: string;
 }
 
+export interface FuelReceipt {
+  id: string;
+  fuelId: string;
+  fuelName: string;
+  amount: number;
+  driver?: string;
+  invoice?: string;
+  plate?: string;
+  timestamp: string;
+}
+
 export interface DayStatus {
   date: string;
   status: 'pendiente' | 'en_proceso' | 'cerrado';
   closedBy?: string;
   closedAt?: string;
+  horometerInitial?: number;
+  horometerFinal?: number;
+  tanks?: {
+    [fuelId: string]: {
+      initialDipstick?: number;
+      finalDipstick?: number;
+      refueledAmount?: number;
+    }
+  };
+  receipts?: FuelReceipt[];
 }
 
 export interface FuelPrice {
@@ -84,14 +105,28 @@ export interface AuditEntry {
   icon: string;
 }
 
-export type UserRole = 'Operador' | 'Admin' | 'Supervisor';
+export interface RolePermissions {
+  canManageUsers: boolean;
+  canManagePumps: boolean;
+  canCloseDay: boolean;
+  canEditPrices: boolean;
+  canViewAudit: boolean;
+  canManageInventory: boolean;
+}
+
+export interface AppRole {
+  id: string;
+  name: string;
+  permissions: RolePermissions;
+}
 
 export interface AppUser {
-  uid: string;
-  email: string | null;
-  displayName: string | null;
-  photoURL: string | null;
-  role: UserRole;
+  id?: string;
+  uid?: string; // firebase auth uid, might be undefined until they login
+  email: string;
+  name: string;
+  roleId: string;
+  status: 'activo' | 'inactivo';
 }
 
 export type DayStatusValue = 'pendiente' | 'en_proceso' | 'cerrado';

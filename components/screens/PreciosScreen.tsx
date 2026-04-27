@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useApp } from '@/contexts/AppContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import Card from '@/components/ui/Card';
 import Badge from '@/components/ui/Badge';
@@ -9,11 +10,11 @@ import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
-import { fmtL } from '@/lib/utils';
 import { FUELS, LITERS_PER_GALLON } from '@/lib/constants';
 
 export default function PreciosScreen() {
-  const { currentPrices, setCurrentPrices, priceHistory, addPriceEntry, addAuditEntry } = useApp();
+  const { currentPrices, setCurrentPrices, priceHistory, addAuditEntry, roles } = useApp();
+  const { appUser } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [draft, setDraft] = useState({
@@ -21,6 +22,15 @@ export default function PreciosScreen() {
     regular: currentPrices.regular.toFixed(2),
     diesel: currentPrices.diesel.toFixed(2),
   });
+
+  // Sync draft when currentPrices changes from context (e.g. initial load or cross-tab updates)
+  useEffect(() => {
+    setDraft({
+      super: currentPrices.super.toFixed(2),
+      regular: currentPrices.regular.toFixed(2),
+      diesel: currentPrices.diesel.toFixed(2),
+    });
+  }, [currentPrices]);
 
   const lastEntry = priceHistory[1] || priceHistory[0];
 
@@ -31,23 +41,16 @@ export default function PreciosScreen() {
       diesel: parseFloat(draft.diesel) || currentPrices.diesel,
     };
     setCurrentPrices(newPrices);
-    addPriceEntry({
-      id: Math.random().toString(36).slice(2),
-      date: '26/04/2026',
-      super: newPrices.super,
-      regular: newPrices.regular,
-      diesel: newPrices.diesel,
-      registeredBy: 'Operador',
-    });
+    const roleName = roles.find(r => r.id === appUser?.roleId)?.name || 'Desconocido';
     addAuditEntry({
       timestamp: new Date().toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' }),
-      date: '26/04/2026',
-      userId: 'current',
-      userName: 'Operador',
-      userRole: 'Operador',
+      date: new Date().toLocaleDateString('es-HN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+      userId: appUser?.uid || 'unknown',
+      userName: appUser?.name || 'Sistema',
+      userRole: roleName,
       action: 'Precio actualizado',
       target: 'Súper, Regular, Diésel',
-      detail: `Precios actualizados para el 26/04/2026`,
+      detail: `Precios actualizados para el ${new Date().toLocaleDateString('es-HN')}`,
       icon: 'tag',
     });
     toast.success('Precios guardados', 'Los precios se aplicarán a las lecturas del día actual.');
@@ -79,7 +82,7 @@ export default function PreciosScreen() {
                 suffix="/ L"
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
-                <Badge tone={diff >= 0 ? 'danger' : 'success'} icon={diff >= 0 ? 'arrow-up' : 'arrow-down'}>
+                <Badge tone={diff >= 0 ? 'success' : 'danger'} icon={diff >= 0 ? 'arrow-up' : 'arrow-down'}>
                   {diff >= 0 ? '+' : ''}{diff.toFixed(2)} L. ({((diff / lastPrice) * 100).toFixed(2)}%)
                 </Badge>
                 <span style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'ui-monospace, monospace' }}>
@@ -100,7 +103,7 @@ export default function PreciosScreen() {
             setDraft({ super: currentPrices.super.toFixed(2), regular: currentPrices.regular.toFixed(2), diesel: currentPrices.diesel.toFixed(2) });
             toast.info('Cambios descartados');
           }}>Cancelar</Button>
-          <Button variant="primary" icon="check" onClick={() => setConfirmOpen(true)}>Guardar precios del 26/04</Button>
+          <Button variant="primary" icon="check" onClick={() => setConfirmOpen(true)}>Guardar precios</Button>
         </div>
       </div>
 
@@ -137,7 +140,7 @@ export default function PreciosScreen() {
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         title="Confirmar actualización de precios"
-        message={`Vas a actualizar los precios para el 26/04/2026. Los nuevos precios se aplicarán a todas las lecturas del día.`}
+        message={`Vas a actualizar los precios para el día de hoy. Los nuevos precios se aplicarán a todas las lecturas del día.`}
         confirmLabel="Sí, guardar precios"
         icon="tag"
         tone="primary"

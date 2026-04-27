@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useApp } from '@/contexts/AppContext';
 import Card from '@/components/ui/Card';
 import StatCard from '@/components/ui/StatCard';
@@ -13,11 +14,10 @@ import { useAuth } from '@/contexts/AuthContext';
 const TREND_14D = (() => {
   const arr = [];
   for (let i = 13; i >= 0; i--) {
-    const seed = i * 17 + 7;
     arr.push({
       day: i,
-      liters: Math.floor(2400 + (seed % 9) * 133),
-      lempiras: Math.floor(240000 + (seed % 9) * 15556),
+      liters: 0,
+      lempiras: 0,
     });
   }
   return arr;
@@ -28,57 +28,82 @@ interface DashboardScreenProps {
 }
 
 export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
-  const { pumps, auditLog, dayStatus } = useApp();
-  const { user } = useAuth();
+  const { pumps, auditLog, dayStatus, readings, roles } = useApp();
+  const { user, appUser } = useAuth();
 
-  const name = user?.displayName?.split(' ')[0] || 'Usuario';
+  const name = appUser?.name || user?.displayName?.split(' ')[0] || 'Usuario';
+  const role = roles.find(r => r.id === appUser?.roleId);
+
   const today = new Date();
   const todayLabel = `${getDayOfWeekEs(today)} · ${today.getDate()} de ${getMonthEs(today)}, ${today.getFullYear()}`;
 
-  const totals = { lempiras: 287_412.55, liters: 2842.18, gallons: 2842.18 / LITERS_PER_GALLON };
-  const trendM = TREND_14D.map(d => d.lempiras);
-  const maxV = Math.max(...trendM);
+  const totals = useMemo(() => {
+    let l = 0; let m = 0;
+    readings.forEach(r => {
+      if (r.finalReading !== undefined) {
+        const liters = Math.max(0, r.finalReading - r.initialReading);
+        l += liters;
+        m += liters * r.fuelPrice;
+      }
+    });
+    return { lempiras: m, liters: l, gallons: l / LITERS_PER_GALLON };
+  }, [readings]);
 
-  const QUICK_ACTIONS = [
+  const activePumps = pumps.filter(p => p.isActive);
+  const totalActiveDispensers = activePumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status === 'activo'))).length;
+  const completedFinals = readings.filter(r => r.status === 'activo' && r.finalReading !== undefined).length;
+  const pendingFinals = Math.max(0, totalActiveDispensers - completedFinals);
+
+  const trendM = TREND_14D.map(d => d.lempiras);
+  const maxV = Math.max(...trendM, 1); // fallback to 1 to avoid NaN
+
+  const ALL_QUICK_ACTIONS = [
     { l: 'Lectura inicial', i: 'log-in', r: 'lectura-inicial', c: '#16a34a' },
     { l: 'Lectura final', i: 'log-out', r: 'lectura-final', c: '#d97706' },
     { l: 'Reporte diario', i: 'file', r: 'reporte-diario', c: '#0f1f3d' },
-    { l: 'Configurar precios', i: 'tag', r: 'precios', c: '#3b82f6' },
-    { l: 'Configurar bombas', i: 'fuel', r: 'bombas', c: '#475569' },
-    { l: 'Auditoría', i: 'shield', r: 'auditoria', c: '#475569' },
+    { l: 'Configurar precios', i: 'tag', r: 'precios', c: '#3b82f6', perm: 'canEditPrices' },
+    { l: 'Configurar bombas', i: 'fuel', r: 'bombas', c: '#475569', perm: 'canManagePumps' },
+    { l: 'Auditoría', i: 'shield', r: 'auditoria', c: '#475569', perm: 'canViewAudit' },
   ];
 
-  const ICON_MAP: Record<string, string> = { 'log-in': 'log-in', 'log-out': 'log-out', tag: 'tag', wrench: 'wrench', lock: 'lock', edit: 'edit' };
+  const QUICK_ACTIONS = ALL_QUICK_ACTIONS.filter(it => {
+    if (!it.perm) return true;
+    return role?.permissions?.[it.perm as keyof typeof role.permissions] === true;
+  });
 
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* Greeting */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16 }}>
+      <div className="flex-responsive">
         <div>
           <div style={{ fontSize: 12, color: '#d97706', fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase' }}>{todayLabel}</div>
           <h2 style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', letterSpacing: -0.4, marginTop: 4, marginBottom: 0 }}>
             Buenos días, {name}.
           </h2>
           <div style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>
-            Tienes <b style={{ color: '#d97706' }}>3 lecturas finales pendientes</b> antes de cerrar el día.
+            {pendingFinals > 0 ? (
+              <>Tienes <b style={{ color: '#d97706' }}>{pendingFinals} lecturas finales pendientes</b> antes de cerrar el día.</>
+            ) : (
+              <>Todas las lecturas finales han sido registradas.</>
+            )}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignSelf: 'stretch', flexWrap: 'wrap' }}>
           <Button variant="secondary" icon="download">Exportar Excel</Button>
           <Button variant="primary" icon="log-out" onClick={() => setRoute('lectura-final')}>Registrar lectura final</Button>
         </div>
       </div>
 
       {/* Stat row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
-        <StatCard tone="primary" label="Vendido hoy" icon="fuel" value={fmtL(totals.lempiras)} sub="vs. ayer" trend={6.2}/>
-        <StatCard tone="neutral" label="Litros vendidos" icon="droplet" value={fmtNum(totals.liters, 2)} sub="L · hoy" trend={4.8}/>
-        <StatCard tone="neutral" label="Galones vendidos" icon="droplet" value={fmtNum(totals.gallons, 2)} sub="gal · hoy" trend={4.8}/>
-        <StatCard tone="accent" label="Bombas activas" icon="gauge" value="2 / 3" sub="1 en mantenimiento"/>
+      <div className="dashboard-stats grid-cols-4">
+        <StatCard tone="primary" label="Vendido hoy" icon="fuel" value={fmtL(totals.lempiras)} sub="estimado"/>
+        <StatCard tone="neutral" label="Litros vendidos" icon="droplet" value={fmtNum(totals.liters, 2)} sub="L · hoy"/>
+        <StatCard tone="neutral" label="Galones vendidos" icon="droplet" value={fmtNum(totals.gallons, 2)} sub="gal · hoy"/>
+        <StatCard tone="accent" label="Bombas activas" icon="gauge" value={`${activePumps.length} / ${pumps.length}`} sub={`${pumps.length - activePumps.length} en mantenimiento`}/>
       </div>
 
       {/* Trend + quick actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14 }}>
+      <div className="dashboard-grid-2 grid-cols-2-1">
         <Card>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
             <div>
@@ -99,13 +124,13 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
               return (
                 <div key={i} style={{ flex: 1, alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                   <div style={{
-                    width: '100%', height: `${h}%`,
+                    width: '100%', height: `${Math.max(1, h)}%`,
                     background: isToday ? '#d97706' : '#0f1f3d',
                     borderRadius: '4px 4px 0 0',
                     opacity: isToday ? 1 : 0.85,
                   }}/>
                   <span style={{ fontSize: 9.5, color: '#94a3b8', fontFamily: 'ui-monospace, monospace' }}>
-                    {String(26 - (TREND_14D.length - 1 - i)).padStart(2, '0')}
+                    {String(today.getDate() - (TREND_14D.length - 1 - i)).padStart(2, '0')}
                   </span>
                 </div>
               );
@@ -136,16 +161,20 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', letterSpacing: -0.2, margin: 0 }}>Estado de bombas</h3>
-          <button onClick={() => setRoute('bombas')} style={{ background: 'transparent', border: 0, color: '#0f1f3d', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}>
-            Ver todas <Icon name="chevron-right" size={12}/>
-          </button>
+          {role?.permissions?.canManagePumps && (
+            <button onClick={() => setRoute('bombas')} style={{ background: 'transparent', border: 0, color: '#0f1f3d', fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: 'inherit' }}>
+              Ver todas <Icon name="chevron-right" size={12}/>
+            </button>
+          )}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+        <div className="grid-cols-3">
           {pumps.map((p) => {
             const allRows = p.faces.flatMap(f => f.dispensers);
-            const liters = allRows.reduce((s, r) => s + 280, 0);
+            const pumpReadings = readings.filter(r => r.pumpId === p.id);
+            const liters = pumpReadings.reduce((s, r) => s + (r.finalReading !== undefined ? Math.max(0, r.finalReading - r.initialReading) : 0), 0);
             const lemp = liters * p.fuel.price;
-            const completed = Math.floor(allRows.length * 0.7);
+            const completed = pumpReadings.filter(r => r.finalReading !== undefined).length;
+            
             return (
               <Card key={p.id} hoverable>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -186,12 +215,14 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', letterSpacing: -0.2, margin: 0 }}>Actividad reciente</h3>
-          <button onClick={() => setRoute('auditoria')} style={{ background: 'transparent', border: 0, color: '#0f1f3d', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-            Ver auditoría →
-          </button>
+          {role?.permissions?.canViewAudit && (
+            <button onClick={() => setRoute('auditoria')} style={{ background: 'transparent', border: 0, color: '#0f1f3d', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+              Ver auditoría →
+            </button>
+          )}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {auditLog.slice(0, 5).map((a, i) => (
+          {auditLog.length > 0 ? auditLog.slice(0, 5).map((a, i) => (
             <div key={a.id} style={{
               display: 'grid', gridTemplateColumns: '40px 1fr auto auto', gap: 12,
               padding: '12px 4px', alignItems: 'center',
@@ -207,7 +238,11 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
               <div style={{ fontSize: 11.5, color: '#475569' }}>{a.userName}</div>
               <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'ui-monospace, monospace' }}>{a.timestamp}</div>
             </div>
-          ))}
+          )) : (
+            <div style={{ padding: '24px 0', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+              No hay actividad reciente
+            </div>
+          )}
         </div>
       </Card>
     </div>

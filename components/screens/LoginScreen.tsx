@@ -39,7 +39,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateColumns: '1fr 1fr', background: 'white', minHeight: '100vh' }}>
+    <div className="login-grid">
       {/* Left brand panel */}
       <div style={{
         background: 'linear-gradient(140deg, #0a1530 0%, #14275a 60%, #0f1f3d 100%)',

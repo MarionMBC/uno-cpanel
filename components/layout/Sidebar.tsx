@@ -3,35 +3,48 @@
 import Icon from '@/components/ui/Icon';
 import DayStatusBadge from '@/components/ui/DayStatusBadge';
 import { DayStatusValue } from '@/types';
+import { useAuth } from '@/contexts/AuthContext';
+import { useApp } from '@/contexts/AppContext';
+import { useMemo } from 'react';
 
 interface SidebarProps {
   route: string;
   setRoute: (r: string) => void;
   dayStatus: DayStatusValue;
+  isOpen?: boolean;
 }
 
-const ITEMS = [
+const ALL_ITEMS = [
   { key: 'dashboard', label: 'Dashboard', icon: 'home' },
   { key: 'lectura-inicial', label: 'Lectura inicial', icon: 'log-in' },
   { key: 'lectura-final', label: 'Lectura final', icon: 'log-out' },
+  { key: 'control-combustible', label: 'Control inventario', icon: 'droplet', perm: 'canManageInventory' },
   { key: 'reporte-diario', label: 'Reporte diario', icon: 'file' },
   { key: 'reporte-mensual', label: 'Reporte mensual', icon: 'calendar' },
-  { key: 'precios', label: 'Precio del combustible', icon: 'tag' },
-  { key: 'bombas', label: 'Configuración bombas', icon: 'fuel' },
-  { key: 'auditoria', label: 'Auditoría', icon: 'shield' },
+  { key: 'precios', label: 'Precio del combustible', icon: 'tag', perm: 'canEditPrices' },
+  { key: 'bombas', label: 'Configuración bombas', icon: 'fuel', perm: 'canManagePumps' },
+  { key: 'usuarios', label: 'Usuarios y roles', icon: 'users', perm: 'canManageUsers' },
+  { key: 'auditoria', label: 'Auditoría', icon: 'shield', perm: 'canViewAudit' },
 ];
 
-export default function Sidebar({ route, setRoute, dayStatus }: SidebarProps) {
+export default function Sidebar({ route, setRoute, dayStatus, isOpen = false }: SidebarProps) {
+  const { appUser } = useAuth();
+  const { roles } = useApp();
   const now = new Date();
   const timeStr = now.toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' });
 
+  const allowedItems = useMemo(() => {
+    const userRole = roles.find(r => r.id === appUser?.roleId);
+    if (!userRole) return ALL_ITEMS.filter(it => !it.perm);
+    
+    return ALL_ITEMS.filter(it => {
+      if (!it.perm) return true;
+      return (userRole.permissions as any)[it.perm] === true;
+    });
+  }, [roles, appUser]);
+
   return (
-    <aside style={{
-      width: 248, background: '#0a1530', color: '#cbd5e1',
-      display: 'flex', flexDirection: 'column',
-      borderRight: '1px solid rgba(255,255,255,.06)',
-      flexShrink: 0,
-    }}>
+    <aside className={`sidebar-container ${isOpen ? 'open' : ''}`}>
       <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid rgba(255,255,255,.06)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ width: 36, height: 36, borderRadius: 9, background: '#fbbf24', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
@@ -45,7 +58,7 @@ export default function Sidebar({ route, setRoute, dayStatus }: SidebarProps) {
       </div>
 
       <nav style={{ flex: 1, padding: 10, display: 'flex', flexDirection: 'column', gap: 2 }}>
-        {ITEMS.map((it) => {
+        {allowedItems.map((it) => {
           const active = route === it.key;
           return (
             <button
@@ -76,7 +89,7 @@ export default function Sidebar({ route, setRoute, dayStatus }: SidebarProps) {
           <div style={{ fontSize: 10, color: '#94a3b8', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 }}>Estado del día</div>
           <DayStatusBadge status={dayStatus} />
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, fontFamily: 'ui-monospace, monospace' }}>
-            26 abr 2026 · {timeStr}
+            {now.toLocaleDateString('es-HN', { day: '2-digit', month: 'short', year: 'numeric' })} · {timeStr}
           </div>
         </div>
       </div>
