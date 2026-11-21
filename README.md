@@ -18,6 +18,10 @@ Los emuladores guardan en memoria: al reiniciarlos, correr `npm run seed:emu` de
 
 `firebase.emulator.json` usa `firestore.emulator.rules` (abiertas) y nunca se despliega; `firebase.json` es la config de producción.
 
+## Precio oficial de referencia (SEN)
+
+Pantalla **Precio del combustible** → "Consultar precio oficial": la Secretaría de Energía fija precios máximos **semanales** (vigentes desde el lunes) solo para Tegucigalpa y San Pedro Sula, en L/galón. El panel lee desde el navegador las notas de Once Noticias y HCH (API pública de WordPress), extrae los precios de Tegucigalpa (`lib/preciosOficiales.ts`), los cruza entre fuentes, enlaza la imagen oficial de sen.hn y suma el **diferencial de Guaimaca** por producto (L/litro, `settings/precios`). "Usar estos precios" solo llena el formulario; si las fuentes no coinciden o el salto supera 15 % exige confirmar que se verificó en la imagen oficial. Nada se aplica solo.
+
 ## Control de combustible y evaporación
 
 Menú **Control inventario**: varilla de tanques en **pulgadas** → galones con las tablas de calibración de la estación (`lib/calibracion.ts`: Diésel 5016 gal hasta 71.50 pulg, Súper 5040 gal hasta 70.75 pulg; entre puntos se interpola). Regular no tiene tabla cargada: se digita en galones. Pipas en galones. El cuadre por tanque compara inicial + pipas − vendido (totalizadores, L ÷ 3.78541) contra la varilla final y muestra el faltante/evaporación en gal, L y %. La pestaña **Tablas de calibración** tiene consulta rápida y marca 3 valores de la hoja impresa a revisar.
