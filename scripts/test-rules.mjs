@@ -66,7 +66,7 @@ caso('operador edita precios', await op(operador, 'PATCH', 'prices/op_test', { s
 caso('operador edita bombas', await op(operador, 'PATCH', 'pumps/p1', { name: 'X' }), false);
 caso('operador crea usuario', await op(operador, 'PATCH', 'users/nuevo@uno.local', { email: 'nuevo@uno.local' }), false);
 caso('operador lee auditoría', await op(operador, 'GET', 'auditLog/x'), false);
-caso('operador agrega auditoría', await op(operador, 'PATCH', `auditLog/op_entry_${run}`, { action: 'x', userId: uids['operador@uno.local'] }), true);
+caso('operador agrega auditoría', await op(operador, 'PATCH', `auditLog/op_entry_${run}`, { action: 'x', userId: uids['operador@uno.local'], userName: 'Operador Uno' }), true);
 // CA4: admin
 caso('admin crea precio', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 37.5 }), true);
 caso('admin modifica precio existente', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 40 }), false);
@@ -102,7 +102,10 @@ caso('admin corrige lectura en día cerrado', await op(admin, 'PATCH', `readings
 caso('consulta modifica lectura de día cerrado', await op(consulta, 'PATCH', `readings/${dia}_p1-A-1`, { date: dia, initialReading: 1, finalReading: 999999 }), false);
 // Auditoría a nombre de otro
 caso('operador firma auditoría con uid ajeno', await op(operador, 'PATCH', `auditLog/falsa_${run}`, { userId: uids['admin@uno.local'], action: 'Cierre del día' }), false);
-caso('operador firma auditoría con su uid', await op(operador, 'PATCH', `auditLog/propia_${run}`, { userId: uids['operador@uno.local'], action: 'Lectura' }), true);
+caso('operador firma auditoría con su uid y nombre', await op(operador, 'PATCH', `auditLog/propia_${run}`, { userId: uids['operador@uno.local'], userName: 'Operador Uno', action: 'Lectura' }), true);
+caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `auditLog/nombre_${run}`, { userId: uids['operador@uno.local'], userName: 'Marion', action: 'Cierre del día' }), false);
+caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
+caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
 
 console.log(fallos ? `\n${fallos} caso(s) fallaron` : '\nTodas las reglas se comportan como se espera');
 process.exit(fallos ? 1 : 0);

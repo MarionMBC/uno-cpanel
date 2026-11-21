@@ -28,6 +28,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
+      if (u && u.email && !u.emailVerified) {
+        // Sesión restaurada sin correo verificado: las reglas niegan todo, se cierra.
+        await signOut(auth);
+        setUser(null);
+        setAppUser(null);
+        setLoading(false);
+        return;
+      }
       if (u && u.email) {
         // Look up user in Firestore
         const userDoc = await getDoc(doc(db, 'users', u.email));
