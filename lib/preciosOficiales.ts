@@ -60,37 +60,46 @@ function precioTras(tramo: string, clave: RegExp): number | null {
     const inicio = (m.index ?? 0) + m[0].length;
     const ventana = tramo.slice(inicio, inicio + 220);
     // El precio de un producto no se busca más allá del nombre del siguiente producto.
-    const corte = Math.min(...Object.values(CLAVES).map(r => {
+    const corte = Math.min(...[...Object.values(CLAVES), /\b(?:GLP|LPG|gas licuado)\b/i].map(r => {
       const k = new RegExp(r.source, 'i').exec(ventana);
       return k ? k.index : Infinity;
     }));
     const zona = ventana.slice(0, Number.isFinite(corte) ? corte : ventana.length);
+    const candidatos: { v: number; destino: boolean }[] = [];
     for (const x of zona.matchAll(MONTO)) {
       const v = x[1] !== undefined ? parseFloat(x[1].replace(',', '.')) : Number(x[2]) + Number(x[3]) / 100;
       if (v < MIN_GAL || v > MAX_GAL) continue;
-      const antes = zona.slice(Math.max(0, (x.index ?? 0) - 30), x.index ?? 0);
-      const despues = zona.slice((x.index ?? 0) + x[0].length, (x.index ?? 0) + x[0].length + 12);
-      // "pasa de L142.91 a L137.43", "de 142.91 hasta 137.43": el primero es el precio anterior.
-      if (/\bde\s*$/i.test(antes) && /^\s*(?:a|hasta)\b/i.test(despues)) continue;
-      // "antes L142.91", "costaba L142.91", "precio anterior de L142.91".
-      if (/(?:antes|anterior(?:mente)?|costaba|era de|estaba en|semana pasada)[^0-9]{0,12}$/i.test(antes)) continue;
-      // Variaciones: "sube L65.00", "aumento de L90", "rebaja de 85 lempiras".
-      if (/(?:sub(?:e|i[oó]|ir[aá])|baj(?:a|[oó]|ar[aá])|aument\w*|increment\w*|rebaja|disminu\w*|reducci[oó]n)\s*(?:de\s*)?$/i.test(antes)) continue;
-      return Math.round(v * 100) / 100;
+      const antes = zona.slice(Math.max(0, (x.index ?? 0) - 40), x.index ?? 0);
+      const despues = zona.slice((x.index ?? 0) + x[0].length, (x.index ?? 0) + x[0].length + 14);
+      // "pasa de/desde L142.91 a L137.43": el primero es el precio anterior (solo si después viene otro monto).
+      if (/\b(?:de|desde)\s*$/i.test(antes) && /^\s*(?:a|hasta)\s+(?:L\s?)?\d/i.test(despues)) continue;
+      // "antes L142.91", "costaba", "se cotizaba en", "dejará de costar", "precio anterior de".
+      if (/(?:antes|anterior(?:mente)?|costaba|cotizaba|era de|estaba en|semana pasada|dejar[aá] de costar)[^0-9]{0,14}$/i.test(antes)) continue;
+      // Variaciones: "sube L85", "alza de", "aumento de", "rebaja de".
+      if (/(?:sub(?:e|i[oó]|ir[aá])|baj(?:a|[oó]|ar[aá])|alza|aument\w*|increment\w*|rebaja|disminu\w*|reducci[oó]n)\s*(?:de\s*)?$/i.test(antes)) continue;
+      const destino = /(?:costar[aá]|quedar[aá]|quedando|quedar|ubicar(?:se|[aá])|cotizar[aá]|vender[aá]|precio(?: ser[aá])?(?: de)?|pasar[aá] a costar|mantendr[aá]|mantiene|ahora|nuevo|hasta|\ba|\ben|:)[^0-9]{0,14}$/i.test(antes);
+      candidatos.push({ v: Math.round(v * 100) / 100, destino });
+    }
+    if (candidatos.length === 1) return candidatos[0].v;
+    if (candidatos.length > 1) {
+      // Varios montos posibles: vale el primero marcado como destino; si ninguno lo es, es ambiguo.
+      const d = candidatos.find(c => c.destino);
+      return d ? d.v : null;
     }
   }
   return null;
 }
 
 /** Fecha "a partir del lunes 23 de noviembre (de 2026)" → YYYY-MM-DD. Sin año: el de `anioRef`. */
-function vigenciaDe(txt: string, anioRef: number): string | null {
+function vigenciaDe(txt: string, anioRef: number, mesRef?: number): string | null {
   // Solo frases de vigencia ("a partir del lunes 23 de noviembre", "vigentes desde el 23 de…", "entran en
   // vigencia … 16 de noviembre"); nunca la fecha de publicación de la nota.
   const m = /(?:a partir del?|vigentes? desde el?|en vigencia(?: a partir)?(?: del?)?|rigen desde el?)\s+(?:(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+)?(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)(?:\s+(?:de|del)\s+(\d{4}))?/i
     .exec(txt);
   if (!m) return null;
   const mes = MESES.indexOf(m[2].toLowerCase()) + 1;
-  const anio = m[3] ? Number(m[3]) : anioRef;
+  // Sin año explícito: nota de diciembre que anuncia enero → año siguiente.
+  const anio = m[3] ? Number(m[3]) : anioRef + (mesRef === 12 && mes === 1 ? 1 : 0);
   return `${anio}-${String(mes).padStart(2, '0')}-${String(Number(m[1])).padStart(2, '0')}`;
 }
 
@@ -107,20 +116,22 @@ function preciosDeTabla(html: string): Record<ProductoOficial, number | null> {
     const prod = PRODUCTOS_OFICIALES.find(p => CLAVES[p].test(f[0] ?? ''));
     const celda = f[col];
     if (!prod || out[prod] !== null || !celda) continue;
-    const n = parseFloat(celda.replace(/[^\d.,]/g, '').replace(',', '.'));
+    const mm = /(\d{2,3}(?:[.,]\d{1,2})?)/.exec(celda);
+    const n = mm ? parseFloat(mm[1].replace(',', '.')) : NaN;
     if (n >= MIN_GAL && n <= MAX_GAL) out[prod] = Math.round(n * 100) / 100;
   }
   return out;
 }
 
-export function extraerPrecios(html: string, anioRef = new Date().getFullYear()): PreciosNota {
+export function extraerPrecios(html: string, anioRef = new Date().getFullYear(), mesRef?: number): PreciosNota {
   const txt = textoPlano(html);
-  if (/<table/i.test(html)) return { porGalon: preciosDeTabla(html), vigencia: vigenciaDe(txt, anioRef) };
+  // Tabla con columna Tegucigalpa: manda la tabla. Otras tablas (publicidad, embeds) no anulan el texto.
+  if (/<table[\s\S]*Tegucigalpa[\s\S]*<\/table>/i.test(html)) return { porGalon: preciosDeTabla(html), vigencia: vigenciaDe(txt, anioRef, mesRef) };
   const tgu = tramoTegucigalpa(txt);
   const porGalon = Object.fromEntries(
     PRODUCTOS_OFICIALES.map(p => [p, tgu ? precioTras(tgu, CLAVES[p]) : null]),
   ) as Record<ProductoOficial, number | null>;
-  return { porGalon, vigencia: vigenciaDe(txt, anioRef) };
+  return { porGalon, vigencia: vigenciaDe(txt, anioRef, mesRef) };
 }
 
 export const porLitro = (galon: number) => Math.round((galon / LITROS_POR_GALON) * 100) / 100;

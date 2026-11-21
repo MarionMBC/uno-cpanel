@@ -56,7 +56,7 @@ async function leerMedio(m: (typeof MEDIOS)[number]): Promise<Lectura | null> {
   const limite = Date.now() - DIAS_VALIDEZ * 86400000;
   for (const p of posts) {
     if (new Date(p.date).getTime() < limite || !esNotaDePrecios(p.title.rendered)) continue;
-    const precios = extraerPrecios(p.content.rendered, new Date(p.date).getFullYear());
+    const precios = extraerPrecios(p.content.rendered, new Date(p.date).getFullYear(), new Date(p.date).getMonth() + 1);
     if (notaCompleta(precios)) return { medio: m.nombre, link: p.link, fecha: p.date, precios };
   }
   return null;
@@ -219,7 +219,7 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
                           <div style={{ display: 'inline-block', width: 120 }}>
                             <TextField
                               value={dif[p.id]}
-                              onChange={v => { if (/^-?\d*\.?\d{0,2}$/.test(v)) setDif(d => ({ ...d, [p.id]: v })); }}
+                              onChange={v => { if (/^-?\d*\.?\d{0,2}$/.test(v)) { setDif(d => ({ ...d, [p.id]: v })); setVerificado(false); } }}
                               prefix="+"
                               disabled={!puedeEditar}
                               error={difValido(p.id) ? undefined : `${DIF_MIN} a +${DIF_MAX}`}

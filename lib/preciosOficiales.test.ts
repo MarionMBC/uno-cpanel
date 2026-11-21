@@ -68,3 +68,21 @@ test('review r1: vigencia ignora la fecha de publicación', () => {
   const p = extraerPrecios('<p>Publicado el 20 de noviembre. Los precios rigen desde el 23 de noviembre.</p>', 2026);
   assert.equal(p.vigencia, '2026-11-23');
 });
+
+test('seguimiento r2: redacciones con precio anterior → destino o vacío', () => {
+  assert.equal(T('En Tegucigalpa la súper pasa desde L142.91 a L137.43.').super, 137.43);
+  assert.equal(T('En Tegucigalpa la súper dejará de costar L142.91 y costará L137.43.').super, 137.43);
+  assert.equal(T('En Tegucigalpa la súper pasa de L142.91 para quedar en L137.43.').super, 137.43);
+  assert.equal(T('En Tegucigalpa la súper se cotizaba en L142.91 y ahora en L137.43.').super, 137.43);
+  assert.equal(T('En Tegucigalpa la súper acumula un alza de L85.00 y costará L137.43.').super, 137.43);
+  assert.equal(T('En Tegucigalpa la súper L142.91 L137.43 sin contexto.').super, null);
+  assert.equal(T('En Tegucigalpa la súper tendrá un precio de L137.43 a partir del lunes.').super, 137.43);
+});
+
+test('seguimiento r2: tabla ajena no anula el texto; celda con variación; vigencia cambio de año', () => {
+  const p = extraerPrecios('<table><tr><td>Publicidad</td></tr></table><p>En Tegucigalpa la súper costará L137.43, la regular L122.81 y el diésel L152.70.</p>', 2026);
+  assert.ok(notaCompleta(p));
+  const t = extraerPrecios('<table><tr><th>Producto</th><th>Tegucigalpa</th></tr><tr><td>Súper</td><td>L137.43 (-5.48)</td></tr></table>', 2026);
+  assert.equal(t.porGalon.super, 137.43);
+  assert.equal(extraerPrecios('<p>Rigen a partir del lunes 4 de enero.</p>', 2026, 12).vigencia, '2027-01-04');
+});
