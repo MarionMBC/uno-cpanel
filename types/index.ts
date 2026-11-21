@@ -81,6 +81,8 @@ export interface DayStatus {
     }
   };
   receipts?: FuelReceipt[];
+  /** Fondo de cambio (sencillo) con el que abre la caja, en lempiras. */
+  cashFund?: number;
 }
 
 export interface FuelPrice {

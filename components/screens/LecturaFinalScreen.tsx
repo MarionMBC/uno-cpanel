@@ -15,6 +15,7 @@ import { fmtL, fmtNum } from '@/lib/utils';
 import { LITERS_PER_GALLON } from '@/lib/constants';
 import { DailyReading } from '@/types';
 import * as XLSX from 'xlsx';
+import { round } from '@/lib/totalizadores';
 
 export default function LecturaFinalScreen() {
   const { pumps, dayStatus, setDayStatus, dayData, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles } = useApp();
@@ -54,8 +55,10 @@ export default function LecturaFinalScreen() {
     const fVal = parseFloat(finals[id]) || 0;
     const liters = Math.max(0, fVal - iVal);
     const gallons = liters / LITERS_PER_GALLON;
-    const lemp = gallons * getPrice(fuelId);
-    return { liters, gallons, lemp, initVal: iVal, price: getPrice(fuelId) };
+    // Precio de la lectura (fijado al abrir el día); el vigente solo si falta. Mismo criterio y redondeo que el Cuadro.
+    const price = existing.fuelPrice > 0 ? existing.fuelPrice : getPrice(existing.fuelId || fuelId);
+    const lemp = round(liters * price, 2);
+    return { liters, gallons, lemp, initVal: iVal, price };
   };
 
   const totals = rows.reduce((s, r) => {

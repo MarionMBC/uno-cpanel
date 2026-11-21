@@ -18,6 +18,7 @@ const ALL_ITEMS = [
   { key: 'dashboard', label: 'Dashboard', icon: 'home' },
   { key: 'lectura-inicial', label: 'Lectura inicial', icon: 'log-in' },
   { key: 'lectura-final', label: 'Lectura final', icon: 'log-out' },
+  { key: 'totalizadores', label: 'Cuadro de totalizadores', icon: 'list' },
   { key: 'control-combustible', label: 'Control inventario', icon: 'droplet', perm: 'canManageInventory' },
   { key: 'reporte-diario', label: 'Reporte diario', icon: 'file' },
   { key: 'reporte-mensual', label: 'Reporte mensual', icon: 'calendar' },
