@@ -19,7 +19,9 @@ export const googleProvider = new GoogleAuthProvider();
 
 // Desarrollo local: NEXT_PUBLIC_USE_EMULATORS=true conecta Auth y Firestore a los
 // emuladores (ver firebase.emulator.json). El guard evita reconectar en cada HMR.
-export const USING_EMULATORS = process.env.NEXT_PUBLIC_USE_EMULATORS === 'true';
+// Doble guard: además del flag, nunca en un build de producción.
+export const USING_EMULATORS =
+  process.env.NEXT_PUBLIC_USE_EMULATORS === 'true' && process.env.NODE_ENV !== 'production';
 
 if (USING_EMULATORS && typeof window !== 'undefined') {
   const w = window as unknown as { __unoEmulatorsConnected?: boolean };

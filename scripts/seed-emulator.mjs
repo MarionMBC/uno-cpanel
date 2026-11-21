@@ -4,12 +4,18 @@
 // lecturas iniciales del cuadro de totalizadores del 27/04/2026 y precios por litro
 // 34.05 / 37.76 / 37.06 (la app guarda precio por galón).
 
-const PROJECT = 'uno-panel';
+const PROJECT = 'demo-uno-panel';
 const FS = `http://127.0.0.1:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
 const AUTH = 'http://127.0.0.1:9099';
 const LITERS_PER_GALLON = 3.78541;
 
+// Credenciales FALSAS, solo existen en el emulador local.
 export const SEED_USER = { email: 'admin@uno.local', password: 'uno12345', name: 'Admin Local' };
+const EXTRA_USERS = [
+  { email: 'operador@uno.local', password: 'uno12345', name: 'Operador Uno', roleId: 'operador', status: 'activo' },
+  { email: 'operador2@uno.local', password: 'uno12345', name: 'Operador Dos', roleId: 'operador', status: 'activo' },
+  { email: 'inactivo@uno.local', password: 'uno12345', name: 'Usuario Inactivo', roleId: 'operador', status: 'inactivo' },
+];
 
 function toValue(v) {
   if (v === null || v === undefined) return { nullValue: null };
@@ -98,6 +104,10 @@ async function main() {
 
   await ensureAuthUser(SEED_USER);
   await setDoc(`users/${SEED_USER.email}`, { email: SEED_USER.email, name: SEED_USER.name, roleId: 'admin', status: 'activo' });
+  for (const u of EXTRA_USERS) {
+    await ensureAuthUser(u);
+    await setDoc(`users/${u.email}`, { email: u.email, name: u.name, roleId: u.roleId, status: u.status });
+  }
   await setDoc('roles/admin', {
     id: 'admin', name: 'Administrador',
     permissions: { canManageUsers: true, canManagePumps: true, canCloseDay: true, canEditPrices: true, canViewAudit: true, canManageInventory: true },
@@ -151,7 +161,7 @@ async function main() {
     await setDoc(`readings/${today}_${pumpId}-${face}-${h}`, reading);
   }
 
-  console.log(`Semilla lista (${today}). Usuario: ${SEED_USER.email} / ${SEED_USER.password}`);
+  console.log(`Semilla lista (${today}). Usuarios: ${[SEED_USER, ...EXTRA_USERS].map(u => u.email).join(', ')} · clave ${SEED_USER.password}`);
 }
 
 main().catch(e => { console.error(e.message); process.exit(1); });

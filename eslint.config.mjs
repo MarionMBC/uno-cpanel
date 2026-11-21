@@ -18,7 +18,7 @@ const eslintConfig = defineConfig([
   ]),
   {
     // Deuda heredada: varias pantallas copian datos de Firestore al estado del formulario en un
-    // effect. Se deja visible como warning hasta refactorizarlas (ver .agent/known-issues.md).
+    // effect. Se deja visible como warning hasta refactorizarlas.
     rules: { "react-hooks/set-state-in-effect": "warn" },
   },
 ]);
