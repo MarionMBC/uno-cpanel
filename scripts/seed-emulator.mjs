@@ -162,6 +162,19 @@ async function main() {
     ],
   });
 
+  // Día anterior cerrado: su varilla final precarga la apertura de hoy (Súper difiere a propósito: 38 vs 38.25 pulg).
+  const [ay, am, ad] = today.split('-').map(Number);
+  const yesterday = new Date(Date.UTC(ay, am - 1, ad - 1)).toISOString().slice(0, 10);
+  await setDoc(`dayStatus/${yesterday}`, {
+    date: yesterday,
+    status: 'cerrado',
+    tanks: {
+      diesel: { finalInches: 45.5, finalGallons: 3362 },
+      super: { finalInches: 38, finalGallons: 2753 },
+      regular: { finalGallons: 2800 },
+    },
+  });
+
   for (const [key, initial] of Object.entries(INITIAL)) {
     const [b, c, h] = key.split('-').map(Number);
     const pumpId = `p${b}`;
