@@ -1,0 +1,3 @@
+# ESLint (google) exige LF: que Windows/autocrlf no los convierta a CRLF.
+*.js text eol=lf
+*.mjs text eol=lf
