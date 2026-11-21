@@ -50,6 +50,16 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Sugerencias del precio oficial semanal: las escribe la Cloud Function (Admin SDK).
+    match /prices_official/{id} {
+      allow read: if activo();
+      allow write: if false;
+    }
+    match /prices_official_errors/{id} {
+      allow read: if permiso('canEditPrices');
+      allow write: if false;
+    }
+
     match /settings/{settingId} {
       allow read: if activo();
       allow write: if permiso('canEditPrices');
@@ -72,8 +82,10 @@ service cloud.firestore {
       allow read: if activo();
       allow create: if activo() && lecturaValida()
         && (!diaCerrado(request.resource.data.date) || permiso('canCloseDay'));
+      // Cambiar la lectura inicial ya registrada es una corrección: exige canCloseDay.
       allow update: if activo() && lecturaValida()
         && request.resource.data.date == resource.data.date
+        && (request.resource.data.initialReading == resource.data.initialReading || permiso('canCloseDay'))
         && (!diaCerrado(resource.data.date) || permiso('canCloseDay'));
       allow delete: if false;
     }

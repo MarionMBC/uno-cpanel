@@ -79,6 +79,10 @@ caso('colección desconocida', await op(admin, 'GET', 'secretos/x'), false);
 
 // Review r1 de TASK-006
 const consulta = await token('consulta@uno.local');
+caso('consulta (sin canCloseDay) cambia inicial ya registrada', await op(consulta, 'PATCH', `readings/test_op_${hoy}`, { date: hoy, initialReading: 50, finalReading: 110 }), false);
+caso('consulta guarda final sin cambiar inicial', await op(consulta, 'PATCH', `readings/test_op_${hoy}`, { date: hoy, initialReading: 100, finalReading: 120 }), true);
+{ const st = await op(operador, 'GET', 'prices_official/2026-11-23'); caso('operador lee sugerencia oficial (404 = permitido sin doc)', st === 404 ? 200 : st, true); }
+caso('admin escribe sugerencia oficial desde cliente', await op(admin, 'PATCH', 'prices_official/x', { a: 1 }), false);
 caso('operador lee ficha ajena', await op(operador, 'GET', 'users/admin@uno.local'), false);
 // Robo de ficha: el admin crea la ficha de alguien que aún no entró; un tercero se registra con ese correo sin verificar.
 const robo = `robo${run}@uno.local`;
