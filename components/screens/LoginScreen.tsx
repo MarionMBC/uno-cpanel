@@ -31,8 +31,13 @@ export default function LoginScreen() {
     setError('');
     try {
       await signInWithEmail(email, password);
-    } catch {
-      setError('Correo o contraseña incorrectos');
+    } catch (e: unknown) {
+      const m = e instanceof Error ? e.message : '';
+      setError(
+        m === 'Cuenta inactiva' ? 'Tu cuenta ha sido desactivada. Contacta al administrador.'
+        : m === 'Acceso denegado' ? 'Tu cuenta no tiene acceso a este sistema. Contacta al administrador.'
+        : 'Correo o contraseña incorrectos'
+      );
     } finally {
       setLoading(false);
     }

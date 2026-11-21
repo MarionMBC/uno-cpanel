@@ -86,23 +86,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithEmail = async (email: string, password: string) => {
     setAuthError('');
-    const userDoc = await getDoc(doc(db, 'users', email));
-    
-    if (!userDoc.exists() && email !== SUPER_ADMIN_EMAIL) {
+    // Primero se autentica: las reglas no permiten leer `users` sin sesión.
+    const { signInWithEmailAndPassword } = await import('firebase/auth');
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const correo = cred.user.email || email;
+    const userDoc = await getDoc(doc(db, 'users', correo));
+    if (!userDoc.exists() && correo !== SUPER_ADMIN_EMAIL) {
+      await signOut(auth);
       setAuthError('Tu cuenta no tiene acceso a este sistema. Contacta al administrador.');
       throw new Error('Acceso denegado');
     }
-    
-    if (userDoc.exists()) {
-       const data = userDoc.data() as AppUser;
-       if (data.status === 'inactivo') {
-         setAuthError('Tu cuenta ha sido desactivada. Contacta al administrador.');
-         throw new Error('Cuenta inactiva');
-       }
+    if (userDoc.exists() && (userDoc.data() as AppUser).status === 'inactivo') {
+      await signOut(auth);
+      setAuthError('Tu cuenta ha sido desactivada. Contacta al administrador.');
+      throw new Error('Cuenta inactiva');
     }
-
-    const { signInWithEmailAndPassword } = await import('firebase/auth');
-    await signInWithEmailAndPassword(auth, email, password);
   };
 
   const logout = async () => {
