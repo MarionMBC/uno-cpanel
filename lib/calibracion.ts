@@ -119,3 +119,11 @@ export function cuadreTanque(p: { inicialGal: number; recibidoGal: number; vendi
     porcentaje: vendidoGal > 0 ? Math.round((diferenciaGal / vendidoGal) * 10000) / 100 : null,
   };
 }
+
+/** Galones de una pipa: campo `gallons`, o el legado `amount` (litros) de registros anteriores. */
+export const galonesPipa = (r: { gallons?: number; amount: number }) =>
+  r.gallons !== undefined ? r.gallons : r.amount / LITROS_POR_GALON;
+
+/** Galones recibidos en un tanque: `refueledGallons`, o el legado `refueledAmount` en litros. */
+export const galonesRecibidos = (tk?: { refueledGallons?: number; refueledAmount?: number }) =>
+  tk?.refueledGallons !== undefined ? tk.refueledGallons : (tk?.refueledAmount || 0) / LITROS_POR_GALON;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { TABLAS, ANOMALIAS, esAnomalia, galonesDesdePulgadas, cuadreTanque, maxPulgadas } from './calibracion.ts';
+import { TABLAS, ANOMALIAS, esAnomalia, galonesDesdePulgadas, cuadreTanque, maxPulgadas, galonesPipa, galonesRecibidos } from './calibracion.ts';
 
 test('tablas completas: pasos de 0.25 sin huecos hasta la capacidad', () => {
   for (const [id, t, max] of [['diesel', TABLAS.diesel, 71.5], ['super', TABLAS.super, 70.75]] as const) {
@@ -50,4 +50,12 @@ test('cuadre: inicial + recibido − vendido vs medido', () => {
   assert.equal(c.diferenciaL, -37.85);
   assert.equal(c.porcentaje, -2);
   assert.equal(cuadreTanque({ inicialGal: 10, recibidoGal: 0, vendidoL: 0, finalGal: 10 }).porcentaje, null);
+});
+
+test('pipas: galones nuevos y registros viejos en litros', () => {
+  assert.equal(galonesPipa({ gallons: 1000, amount: 3785.41 }), 1000);
+  assert.equal(Math.round(galonesPipa({ amount: 3785.41 }) * 100) / 100, 1000);
+  assert.equal(galonesRecibidos({ refueledGallons: 500, refueledAmount: 99 }), 500);
+  assert.equal(Math.round(galonesRecibidos({ refueledAmount: 3785.41 })), 1000);
+  assert.equal(galonesRecibidos(undefined), 0);
 });

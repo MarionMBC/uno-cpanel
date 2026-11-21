@@ -9,11 +9,13 @@ import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import Modal from '@/components/overlays/Modal';
-import { FuelReceipt } from '@/types';
+import { DayStatus, FuelReceipt } from '@/types';
+import { deleteField } from 'firebase/firestore';
+import { buildCuadro } from '@/lib/totalizadores';
 import { FUELS } from '@/lib/constants';
 import { fmtNum } from '@/lib/utils';
 import {
-  TABLAS, ANOMALIAS, TanqueId, TablaCalibracion, galonesDesdePulgadas, cuadreTanque, maxPulgadas, esAnomalia, LITROS_POR_GALON,
+  TABLAS, ANOMALIAS, TanqueId, TablaCalibracion, galonesDesdePulgadas, cuadreTanque, maxPulgadas, esAnomalia, LITROS_POR_GALON, galonesPipa, galonesRecibidos,
 } from '@/lib/calibracion';
 
 type Tab = 'apertura' | 'recepciones' | 'cierre' | 'tablas';
@@ -24,6 +26,7 @@ const COLOR: Record<FuelKey, string> = { super: '#ef4444', regular: '#22c55e', d
 
 const tablaDe = (f: FuelKey): TablaCalibracion | null => (f === 'diesel' || f === 'super' ? TABLAS[f as TanqueId] : null);
 const NUM = /^\d*\.?\d*$/;
+
 
 /** Galones a partir de lo digitado: pulgadas con tabla, galones directos sin tabla. */
 function aGalones(f: FuelKey, texto: string): { gal: number | null; error?: string } {
@@ -76,20 +79,26 @@ function TanqueInput({ f, label, value, onChange, disabled }: { f: FuelKey; labe
 }
 
 export default function ControlCombustibleScreen() {
-  const { dayData, updateDayData, dayStatus, readings } = useApp();
+  const { dayData, updateDayData, dayStatus, readings, pumps, currentPrices } = useApp();
   const toast = useToast();
 
   const [activeTab, setActiveTab] = useState<Tab>('apertura');
   const [iniciales, setIniciales] = useState<Record<FuelKey, string>>({ super: '', regular: '', diesel: '' });
   const [finales, setFinales] = useState<Record<FuelKey, string>>({ super: '', regular: '', diesel: '' });
   const [receiptOpen, setReceiptOpen] = useState(false);
-  const [draftReceipt, setDraftReceipt] = useState<Partial<FuelReceipt>>({ fuelId: 'super', amount: 0 });
+  const [draftReceipt, setDraftReceipt] = useState<Partial<FuelReceipt>>({ fuelId: 'super' });
+  const [draftGal, setDraftGal] = useState('');
+  const [horoIni, setHoroIni] = useState('');
+  const [horoFin, setHoroFin] = useState('');
 
   const isClosed = dayStatus === 'cerrado';
 
   // Lo guardado en el día: pulgadas para tanques con tabla, galones para los demás.
   useEffect(() => {
-    if (!dayData?.tanks) return;
+    if (!dayData) return;
+    setHoroIni(dayData.horometerInitial !== undefined ? String(dayData.horometerInitial) : '');
+    setHoroFin(dayData.horometerFinal !== undefined ? String(dayData.horometerFinal) : '');
+    if (!dayData.tanks) return;
     const leer = (f: FuelKey, campo: 'initial' | 'final') => {
       const tk = dayData.tanks?.[f];
       const v = tablaDe(f) ? tk?.[`${campo}Inches`] : tk?.[`${campo}Gallons`];
@@ -105,21 +114,21 @@ export default function ControlCombustibleScreen() {
       toast.error('Revise las varillas', `Lectura fuera de tabla en ${errores.map(f => NOMBRE[f]).join(', ')}.`);
       return;
     }
-    const tanks = { ...dayData?.tanks };
+    // Solo se envían los campos de este paso: setDoc con merge combina los mapas anidados y no pisa
+    // lo que otro equipo haya guardado en el resto del día. Campo vacío = se borra el valor guardado.
+    const tanks: Record<string, Record<string, unknown>> = {};
     TANQUES.forEach(f => {
+      const vacio = valores[f].trim() === '';
       const { gal } = aGalones(f, valores[f]);
-      const n = valores[f].trim() === '' ? undefined : parseFloat(valores[f]);
-      const entry = { ...tanks[f] };
-      if (tablaDe(f)) {
-        if (n !== undefined) entry[`${campo}Inches`] = n;
-        if (gal !== null) entry[`${campo}Gallons`] = gal;
-      } else if (gal !== null) {
-        entry[`${campo}Gallons`] = gal;
-      }
+      const entry: Record<string, unknown> = {};
+      if (tablaDe(f)) entry[`${campo}Inches`] = vacio ? deleteField() : parseFloat(valores[f]);
+      entry[`${campo}Gallons`] = vacio || gal === null ? deleteField() : gal;
       tanks[f] = entry;
     });
+    const horo = campo === 'initial' ? horoIni : horoFin;
+    const horoCampo = campo === 'initial' ? 'horometerInitial' : 'horometerFinal';
     try {
-      await updateDayData({ tanks });
+      await updateDayData({ tanks, [horoCampo]: horo.trim() === '' ? deleteField() : parseFloat(horo) } as unknown as Partial<DayStatus>);
       toast.success(campo === 'initial' ? 'Apertura guardada' : 'Cierre guardado',
         campo === 'initial' ? 'Inventario inicial de tanques registrado.' : 'Inventario final registrado para el cuadre.');
     } catch {
@@ -128,7 +137,8 @@ export default function ControlCombustibleScreen() {
   };
 
   const addReceipt = async () => {
-    if (!draftReceipt.amount || draftReceipt.amount <= 0) {
+    const galones = parseFloat(draftGal);
+    if (!Number.isFinite(galones) || galones <= 0) {
       toast.error('Cantidad inválida', 'Ingrese los galones recibidos.');
       return;
     }
@@ -137,37 +147,38 @@ export default function ControlCombustibleScreen() {
       id: `rec-${Date.now()}`,
       fuelId: fuel.id,
       fuelName: fuel.name,
-      amount: draftReceipt.amount,
+      amount: Math.round(galones * LITROS_POR_GALON * 100) / 100,
+      gallons: galones,
       driver: draftReceipt.driver || '',
       invoice: draftReceipt.invoice || '',
       plate: draftReceipt.plate || '',
       timestamp: new Date().toISOString(),
     };
     const key = fuel.id as FuelKey;
-    const total = (dayData?.tanks?.[key]?.refueledAmount || 0) + draftReceipt.amount;
+    const total = galonesRecibidos(dayData?.tanks?.[key]) + galones;
     try {
       await updateDayData({
         receipts: [...(dayData?.receipts || []), newReceipt],
-        tanks: { ...dayData?.tanks, [key]: { ...dayData?.tanks?.[key], refueledAmount: total } },
+        tanks: { [key]: { refueledGallons: total } },
       });
       setReceiptOpen(false);
-      setDraftReceipt({ fuelId: 'super', amount: 0 });
-      toast.success('Recepción registrada', `Se agregaron ${fmtNum(newReceipt.amount, 2)} gal al tanque de ${fuel.name}.`);
+      setDraftReceipt({ fuelId: 'super' });
+      setDraftGal('');
+      toast.success('Recepción registrada', `Se agregaron ${fmtNum(galones, 2)} gal al tanque de ${fuel.name}.`);
     } catch {
       toast.error('No se guardó', 'Revise la conexión e intente de nuevo.');
     }
   };
 
-  // Litros vendidos por producto según los totalizadores del día (solo lecturas completas y válidas).
-  const vendidoL = useMemo(() => {
-    const s: Record<string, number> = { super: 0, regular: 0, diesel: 0 };
-    readings.forEach(r => {
-      if (r.status !== 'mantenimiento' && r.finalReading !== undefined && r.finalReading >= r.initialReading) {
-        s[r.fuelId] = (s[r.fuelId] || 0) + (r.finalReading - r.initialReading);
-      }
-    });
-    return s;
-  }, [readings]);
+  // Litros vendidos por producto: mismo cálculo que el Cuadro de totalizadores (duplicadas, mantenimiento,
+  // bombas inactivas y lecturas inválidas se tratan igual en ambas pantallas).
+  const cuadro = useMemo(() => buildCuadro(pumps, readings, currentPrices), [pumps, readings, currentPrices]);
+  const vendidoL = useMemo(() => Object.fromEntries(cuadro.productos.map(p => [p.fuelId, p.litros])) as Record<string, number>, [cuadro]);
+  const pendientesPorProducto = useMemo(() => {
+    const m: Record<string, number> = {};
+    cuadro.grupos.flatMap(g => g.filas).forEach(f => { if (f.estado === 'pendiente') m[f.fuelId] = (m[f.fuelId] || 0) + 1; });
+    return m;
+  }, [cuadro]);
 
   const [consulta, setConsulta] = useState<{ tanque: TanqueId; pulg: string }>({ tanque: 'diesel', pulg: '' });
   const consultaGal = consulta.pulg === '' ? null : galonesDesdePulgadas(TABLAS[consulta.tanque], parseFloat(consulta.pulg));
@@ -196,7 +207,11 @@ export default function ControlCombustibleScreen() {
             </div>
             <Button variant="primary" icon="check" onClick={() => guardar('initial', iniciales)} disabled={isClosed}>Guardar Apertura</Button>
           </div>
-          <div className="grid-cols-3">
+          <div className="grid-cols-4">
+            <div style={panel}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#475569' }}>Horómetro Planta</div>
+              <TextField label="Horas iniciales" value={horoIni} onChange={v => { if (NUM.test(v)) setHoroIni(v); }} suffix="hrs" disabled={isClosed}/>
+            </div>
             {TANQUES.map(f => (
               <TanqueInput key={f} f={f} label="Inicial" value={iniciales[f]} onChange={v => setIniciales(s => ({ ...s, [f]: v }))} disabled={isClosed}/>
             ))}
@@ -236,8 +251,8 @@ export default function ControlCombustibleScreen() {
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: '#16a34a', ...mono }}>+{fmtNum(rec.amount, 2)} gal</div>
-                    <div style={{ fontSize: 11, color: '#64748b' }}>{fmtNum(rec.amount * LITROS_POR_GALON, 2)} L</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: '#16a34a', ...mono }}>+{fmtNum(galonesPipa(rec), 2)} gal</div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>{fmtNum(galonesPipa(rec) * LITROS_POR_GALON, 2)} L</div>
                   </div>
                 </div>
               ))}
@@ -256,13 +271,24 @@ export default function ControlCombustibleScreen() {
             <Button variant="primary" icon="lock" onClick={() => guardar('final', finales)} disabled={isClosed}>Guardar y Cuadrar</Button>
           </div>
 
-          <div className="grid-cols-3">
+          <div className="grid-cols-4">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={panel}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#475569' }}>Horómetro Planta</div>
+                <TextField label="Horas finales" value={horoFin} onChange={v => { if (NUM.test(v)) setHoroFin(v); }} suffix="hrs" disabled={isClosed}/>
+                <div style={{ ...fila, fontSize: 12, color: '#64748b' }}><span>Inicial</span><span style={mono}>{dayData?.horometerInitial !== undefined ? `${dayData.horometerInitial} hrs` : '—'}</span></div>
+                <div style={{ ...fila, fontSize: 13, fontWeight: 800, color: '#0f172a', borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>
+                  <span>Trabajado</span>
+                  <span style={mono}>{dayData?.horometerInitial !== undefined && horoFin !== '' ? `${fmtNum(Math.max(0, parseFloat(horoFin) - dayData.horometerInitial), 2)} hrs` : '—'}</span>
+                </div>
+              </div>
+            </div>
             {TANQUES.map(f => {
               const tk = dayData?.tanks?.[f];
               const inicialGal = tk?.initialGallons;
               const finalGal = aGalones(f, finales[f]).gal;
               const c = inicialGal !== undefined && finalGal !== null
-                ? cuadreTanque({ inicialGal, recibidoGal: tk?.refueledAmount || 0, vendidoL: vendidoL[f] || 0, finalGal })
+                ? cuadreTanque({ inicialGal, recibidoGal: galonesRecibidos(tk), vendidoL: vendidoL[f] || 0, finalGal })
                 : null;
               const tono = !c ? '#64748b' : c.diferenciaGal < 0 ? '#dc2626' : c.diferenciaGal > 0 ? '#16a34a' : '#64748b';
               const fondo = !c ? '#f8fafc' : c.diferenciaGal < 0 ? '#fef2f2' : c.diferenciaGal > 0 ? '#f0fdf4' : '#f8fafc';
@@ -271,7 +297,7 @@ export default function ControlCombustibleScreen() {
                   <TanqueInput f={f} label="Final" value={finales[f]} onChange={v => setFinales(s => ({ ...s, [f]: v }))} disabled={isClosed}/>
                   <div style={{ ...panel, background: 'white', gap: 6, fontSize: 12.5, color: '#475569' }}>
                     <div style={fila}><span>Inventario inicial</span><span style={mono}>{inicialGal !== undefined ? `${fmtNum(inicialGal, 2)} gal` : 'sin apertura'}</span></div>
-                    <div style={fila}><span>Pipas recibidas</span><span style={{ ...mono, color: '#16a34a' }}>+{fmtNum(tk?.refueledAmount || 0, 2)} gal</span></div>
+                    <div style={fila}><span>Pipas recibidas</span><span style={{ ...mono, color: '#16a34a' }}>+{fmtNum(galonesRecibidos(tk), 2)} gal</span></div>
                     <div style={fila}><span>Vendido (totalizadores)</span><span style={{ ...mono, color: '#d97706' }}>−{fmtNum((vendidoL[f] || 0) / LITROS_POR_GALON, 2)} gal</span></div>
                     <div style={{ ...fila, borderTop: '1px solid #e2e8f0', paddingTop: 6, fontWeight: 700, color: '#0f172a' }}><span>Debería quedar</span><span style={mono}>{c ? `${fmtNum(c.teoricoGal, 2)} gal` : '—'}</span></div>
                     <div style={{ ...fila, fontWeight: 700, color: '#0f172a' }}><span>Medido (varilla)</span><span style={mono}>{finalGal !== null ? `${fmtNum(finalGal, 2)} gal` : '—'}</span></div>
@@ -284,6 +310,11 @@ export default function ControlCombustibleScreen() {
                             <span>{c.diferenciaGal < 0 ? 'Faltante / evaporación' : c.diferenciaGal > 0 ? 'Sobrante' : 'Exacto'}</span>
                             <span style={mono}>{fmtNum(Math.abs(c.diferenciaGal), 2)} gal</span>
                           </div>
+                          {pendientesPorProducto[f] > 0 && (
+                            <div style={{ fontWeight: 600, fontSize: 11.5, color: '#b45309' }}>
+                              Provisional: {pendientesPorProducto[f]} manguera{pendientesPorProducto[f] > 1 ? 's' : ''} sin lectura final.
+                            </div>
+                          )}
                           <div style={{ ...fila, fontWeight: 600, fontSize: 11.5 }}>
                             <span>{fmtNum(Math.abs(c.diferenciaL), 2)} L</span>
                             <span>{c.porcentaje !== null ? `${fmtNum(Math.abs(c.porcentaje), 2)} % de lo vendido` : 'sin ventas'}</span>
@@ -391,8 +422,8 @@ export default function ControlCombustibleScreen() {
           </div>
           <TextField
             label="Cantidad recibida (galones) *"
-            value={draftReceipt.amount ? draftReceipt.amount.toString() : ''}
-            onChange={(val) => { if (NUM.test(val)) setDraftReceipt(s => ({ ...s, amount: parseFloat(val) || 0 })); }}
+            value={draftGal}
+            onChange={(val) => { if (NUM.test(val)) setDraftGal(val); }}
             suffix="gal"
             autoFocus
           />

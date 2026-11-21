@@ -48,11 +48,14 @@ async function ensureAuthUser({ email, password, name }) {
 }
 
 const FUELS = {
-  diesel: { id: 'diesel', name: 'Diésel', color: '#f59e0b', pricePerLiter: 34.05 },
+  // Cuadro de Tito: manguera 1 = 34.05, 2 = 37.76, 3 = 37.06 L/litro. Contra el precio oficial SEN de
+  // Tegucigalpa del 27/04/2026 (Regular 33.65, Súper 36.65, Diésel 37.35 L/litro) corresponde a
+  // 1 = Regular, 2 = Súper, 3 = Diésel (diferencias +0.30…+1.11 = flete a Guaimaca).
+  regular: { id: 'regular', name: 'Regular', color: '#22c55e', pricePerLiter: 34.05 },
   super: { id: 'super', name: 'Súper', color: '#ef4444', pricePerLiter: 37.76 },
-  regular: { id: 'regular', name: 'Regular', color: '#22c55e', pricePerLiter: 37.06 },
+  diesel: { id: 'diesel', name: 'Diésel', color: '#f59e0b', pricePerLiter: 37.06 },
 };
-const HOSE_FUEL = ['diesel', 'super', 'regular']; // manguera 1, 2, 3
+const HOSE_FUEL = ['regular', 'super', 'diesel']; // manguera 1, 2, 3
 
 // Lecturas iniciales del correo "cuadro de totalizadores" (27/04/2026), en litros.
 // Clave: `${bomba}-${cara}-${manguera}`.
@@ -78,7 +81,7 @@ function buildPumps() {
       id: pumpId,
       name: pumpName,
       isActive: true,
-      fuel: { id: 'diesel', name: 'Diésel', color: '#f59e0b', price: FUELS.diesel.pricePerLiter },
+      fuel: { id: 'regular', name: 'Regular', color: '#22c55e', price: FUELS.regular.pricePerLiter },
       faces: ['A', 'B'].map((face, fi) => ({
         id: face,
         dispensers: HOSE_FUEL.map((fid, hi) => ({
@@ -132,13 +135,14 @@ async function main() {
     date: today,
     status: 'en_proceso',
     cashFund: 1500,
+    horometerInitial: 1520.5,
     tanks: {
-      diesel: { initialInches: 45.5, initialGallons: 3362, finalInches: 40.75, finalGallons: 2947, refueledAmount: 0 },
-      super: { initialInches: 38.25, initialGallons: 2775, finalInches: 46, finalGallons: 3463, refueledAmount: 1000 },
-      regular: { initialGallons: 2800, finalGallons: 2672, refueledAmount: 0 },
+      diesel: { initialInches: 45.5, initialGallons: 3362, finalInches: 44, finalGallons: 3232, refueledGallons: 0 },
+      super: { initialInches: 38.25, initialGallons: 2775, finalInches: 46, finalGallons: 3463, refueledGallons: 1000 },
+      regular: { initialGallons: 2800, finalGallons: 2388, refueledGallons: 0 },
     },
     receipts: [
-      { id: 'rec-seed-1', fuelId: 'super', fuelName: 'Súper', amount: 1000, invoice: '001-001-01-00017456', plate: 'C 123456', driver: 'Conductor de prueba', timestamp: new Date().toISOString() },
+      { id: 'rec-seed-1', fuelId: 'super', fuelName: 'Súper', amount: 3785.41, gallons: 1000, invoice: '001-001-01-00017456', plate: 'C 123456', driver: 'Conductor de prueba', timestamp: new Date().toISOString() },
     ],
   });
 
