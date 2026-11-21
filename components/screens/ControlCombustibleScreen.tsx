@@ -217,7 +217,7 @@ export default function ControlCombustibleScreen() {
             <div style={{ padding: 40, textAlign: 'center', background: '#f8fafc', borderRadius: 12, border: '1px dashed #cbd5e1' }}>
               <Icon name="droplet" size={32} style={{ color: '#94a3b8', marginBottom: 12 }}/>
               <div style={{ fontSize: 14, fontWeight: 700, color: '#475569' }}>No se han registrado descargas hoy</div>
-              <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>Haz clic en "Registrar Pipa" cuando ingrese nuevo inventario.</div>
+              <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>Haz clic en «Registrar Pipa» cuando ingrese nuevo inventario.</div>
             </div>
           ) : (
             <div style={{ display: 'grid', gap: 12 }}>

@@ -11,7 +11,7 @@ import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
-import { Dispenser, DailyReading } from '@/types';
+import { Dispenser, DailyReading, Pump } from '@/types';
 import { fmtNum } from '@/lib/utils';
 
 interface ReadingValue {
@@ -125,15 +125,15 @@ export default function LecturaInicialScreen() {
   const total = allDisp.filter(d => d.status === 'activo').length;
   const totalSuma = Object.values(values).reduce((acc, v) => acc + (parseFloat(v.value) || 0), 0);
 
-  const getPumpFuelsText = (p: any) => {
-    const uniqueFuels = Array.from(new Set(p.faces.flatMap((f: any) => f.dispensers.map((d: any) => d.fuelName))));
+  const getPumpFuelsText = (p: Pump) => {
+    const uniqueFuels = Array.from(new Set(p.faces.flatMap(f => f.dispensers.map(d => d.fuelName))));
     return uniqueFuels.length > 0 ? uniqueFuels.join(' / ') : p.fuel.name;
   };
 
-  const getPumpDispCount = (p: any) => p.faces.reduce((acc: number, f: any) => acc + f.dispensers.length, 0);
+  const getPumpDispCount = (p: Pump) => p.faces.reduce((acc: number, f) => acc + f.dispensers.length, 0);
 
   const saveDraft = () => {
-    const draftToSave: any = { ...values };
+    const draftToSave: Record<string, (typeof values)[string] & { configStatus?: string }> = { ...values };
     Object.keys(draftToSave).forEach(k => {
       const disp = allDisp.find(d => d.id === k);
       if (disp) {
@@ -384,7 +384,7 @@ export default function LecturaInicialScreen() {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 4px' }}>
         <div style={{ fontSize: 12, color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Icon name="info" size={12} style={{ verticalAlign: -2 as any }}/> No se permite registrar dos lecturas iniciales para el mismo dispensador y fecha.
+          <Icon name="info" size={12} style={{ verticalAlign: -2 }}/> No se permite registrar dos lecturas iniciales para el mismo dispensador y fecha.
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {draftExists && <button onClick={() => setConfirmDiscard(true)} disabled={isClosed} style={{ background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca', padding: '0 16px', borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="trash" size={14}/>Descartar borrador</button>}

@@ -253,7 +253,7 @@ export default function LecturaFinalScreen() {
                       <span style={{ width: 22, height: 22, borderRadius: 5, background: '#0f1f3d', color: '#fbbf24', fontSize: 10, fontWeight: 800, display: 'inline-grid', placeItems: 'center' }}>{r.face}</span>
                     </td>
                     <td style={{ padding: '10px 14px', fontWeight: 600, color: '#475569' }}>D{r.name.slice(-1)}</td>
-                    <td style={{ padding: '10px 14px' }}><Badge tone="neutral" dot color={r.fuelColor}>{r.fuelName}</Badge></td>
+                    <td style={{ padding: '10px 14px' }}><Badge tone="neutral" dot>{r.fuelName}</Badge></td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: '#475569' }}>{fmtNum(c.initVal, 2)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right' }}>
                       {isMant ? (

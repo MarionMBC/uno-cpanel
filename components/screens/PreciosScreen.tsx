@@ -61,7 +61,7 @@ export default function PreciosScreen() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
         {FUELS.map((f) => {
           const draftKey = f.id as 'super' | 'regular' | 'diesel';
-          const lastPrice = lastEntry ? (lastEntry as any)[f.id] : f.price;
+          const lastPrice = lastEntry ? lastEntry[f.id as 'super' | 'regular' | 'diesel'] : f.price;
           const diff = (parseFloat(draft[draftKey]) || f.price) - lastPrice;
           return (
             <Card key={f.id}>
@@ -122,7 +122,7 @@ export default function PreciosScreen() {
           </thead>
           <tbody>
             {priceHistory.map((h, i) => (
-              <tr key={(h as any).id || i} style={{ borderTop: '1px solid #f1f5f9', background: i === 0 ? '#fff8e6' : 'white' }}>
+              <tr key={h.id || i} style={{ borderTop: '1px solid #f1f5f9', background: i === 0 ? '#fff8e6' : 'white' }}>
                 <td style={{ padding: '12px 14px', fontWeight: 700, color: '#0f172a' }}>
                   {h.date} {i === 0 && <Badge tone="accent" size="sm">Vigente</Badge>}
                 </td>

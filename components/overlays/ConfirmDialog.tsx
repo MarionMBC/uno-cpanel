@@ -11,7 +11,7 @@ interface ConfirmDialogProps {
   message: string;
   confirmLabel?: string;
   cancelLabel?: string;
-  tone?: 'primary' | 'danger' | 'warning';
+  tone?: 'primary' | 'success' | 'danger' | 'warning';
   icon?: string;
 }
 

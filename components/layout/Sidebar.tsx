@@ -39,7 +39,7 @@ export default function Sidebar({ route, setRoute, dayStatus, isOpen = false }: 
     
     return ALL_ITEMS.filter(it => {
       if (!it.perm) return true;
-      return (userRole.permissions as any)[it.perm] === true;
+      return userRole.permissions[it.perm as keyof typeof userRole.permissions] === true;
     });
   }, [roles, appUser]);
 

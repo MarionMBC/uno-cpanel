@@ -1,0 +1,11 @@
+rules_version = '2';
+// SOLO para el emulador local (firebase.emulator.json). Nunca se despliega.
+// La app lee `users` y siembra colecciones antes de iniciar sesión, por eso
+// el emulador permite todo. Producción usa firestore.rules.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
