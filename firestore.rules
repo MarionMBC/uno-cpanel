@@ -1,18 +1,112 @@
-rules_version='2'
+rules_version = '2';
 
+// Panel de Combustibles · UNO Guaimaca Centro.
+// Acceso solo para usuarios autenticados con ficha activa en users/{email}; los permisos salen de
+// roles/{roleId}.permissions. El super admin (mismo correo fijado en AuthContext) puede crear la
+// configuración inicial cuando el sistema está vacío.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email != null; }
+    function email() { return request.auth.token.email; }
+    function isSuperAdmin() {
+      return signedIn() && email() == 'melchisedec.bustamante@gmail.com' && request.auth.token.email_verified == true;
+    }
+    function ficha() { return get(/databases/$(database)/documents/users/$(email())).data; }
+    // Correo verificado obligatorio: sin esto, cualquiera podría registrarse con contraseña usando el correo
+    // de una ficha que aún no inició sesión y heredar su rol.
+    function verificado() { return signedIn() && request.auth.token.email_verified == true; }
+    function tieneFicha() { return verificado() && exists(/databases/$(database)/documents/users/$(email())); }
+    function activo() { return isSuperAdmin() || (tieneFicha() && ficha().status == 'activo'); }
+    function permiso(p) {
+      return isSuperAdmin() || (
+        activo()
+        && exists(/databases/$(database)/documents/roles/$(ficha().roleId))
+        && get(/databases/$(database)/documents/roles/$(ficha().roleId)).data.permissions[p] == true
+      );
+    }
+
+    // Fichas de usuario: cada quien lee la suya (para validar el acceso al iniciar sesión).
+    match /users/{userEmail} {
+      allow read: if signedIn() && (email() == userEmail || permiso('canManageUsers'));
+      allow create, update: if permiso('canManageUsers');
+      allow delete: if false;
+    }
+
+    match /roles/{roleId} {
+      allow read: if activo();
+      allow write: if permiso('canManageUsers');
+    }
+
+    match /pumps/{pumpId} {
+      allow read: if activo();
+      allow write: if permiso('canManagePumps');
+    }
+
+    // Historial de precios: solo se agregan entradas.
+    match /prices/{priceId} {
+      allow read: if activo();
+      allow create: if permiso('canEditPrices');
+      allow update, delete: if false;
+    }
+
+    match /settings/{settingId} {
+      allow read: if activo();
+      allow write: if permiso('canEditPrices');
+    }
+
+    function diaCerrado(fecha) {
+      return exists(/databases/$(database)/documents/dayStatus/$(fecha))
+        && get(/databases/$(database)/documents/dayStatus/$(fecha)).data.get('status', '') == 'cerrado';
+    }
+    function lecturaValida() {
+      return request.resource.data.date is string
+        && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.initialReading is number
+        && (!('finalReading' in request.resource.data) || request.resource.data.finalReading is number);
+    }
+
+    // Lecturas de totalizadores: cualquier usuario activo registra mientras el día esté abierto;
+    // con el día cerrado solo corrige quien puede cerrar el día. No se borran.
+    match /readings/{readingId} {
+      allow read: if activo();
+      allow create: if activo() && lecturaValida()
+        && (!diaCerrado(request.resource.data.date) || permiso('canCloseDay'));
+      allow update: if activo() && lecturaValida()
+        && request.resource.data.date == resource.data.date
+        && (!diaCerrado(resource.data.date) || permiso('canCloseDay'));
+      allow delete: if false;
+    }
+
+    // Día operativo (tanques, pipas, fondo, horómetro, estado).
+    // Cambiar el estado (cerrar, reabrir o borrar el campo) exige canCloseDay; con el día cerrado,
+    // cualquier cambio exige canCloseDay.
+    match /dayStatus/{date} {
+      allow read: if activo();
+      // El id del día es la fecha (YYYY-MM-DD); evita días "fantasma" fuera de los reportes.
+      allow create: if activo() && date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && (
+        request.resource.data.get('status', 'en_proceso') in ['en_proceso', 'pendiente']
+        || permiso('canCloseDay')
+      );
+      allow update: if activo() && (
+        permiso('canCloseDay')
+        || (request.resource.data.get('status', null) == resource.data.get('status', null)
+            && resource.data.get('status', '') != 'cerrado')
+      );
+      allow delete: if false;
+    }
+
+    // Auditoría: se agrega, nunca se edita ni se borra.
+    match /auditLog/{entryId} {
+      allow read: if permiso('canViewAudit');
+      // Quien registra es quien inicia sesión (no se puede firmar a nombre de otro uid).
+      allow create: if activo() && request.resource.data.userId == request.auth.uid
+        && (isSuperAdmin() || request.resource.data.get('userName', '') == ficha().name);
+      allow update, delete: if false;
+    }
+
     match /{document=**} {
-      // This rule allows anyone with your database reference to view, edit,
-      // and delete all data in your database. It is useful for getting
-      // started, but it is configured to expire after 30 days because it
-      // leaves your app open to attackers. At that time, all client
-      // requests to your database will be denied.
-      //
-      // Make sure to write security rules for your app before that time, or
-      // else all client requests to your database will be denied until you
-      // update your rules.
-      allow read, write: if request.time < timestamp.date(2026, 5, 26);
+      allow read, write: if false;
     }
   }
 }

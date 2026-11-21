@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import { User, onAuthStateChanged, signInWithPopup, signOut, sendEmailVerification } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, googleProvider, db } from '@/lib/firebase';
 import { AppUser } from '@/types';
@@ -28,6 +28,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
+      if (u && u.email && !u.emailVerified) {
+        // Sesión restaurada sin correo verificado: las reglas niegan todo, se cierra.
+        await signOut(auth);
+        setUser(null);
+        setAppUser(null);
+        setLoading(false);
+        return;
+      }
       if (u && u.email) {
         // Look up user in Firestore
         const userDoc = await getDoc(doc(db, 'users', u.email));
@@ -82,27 +90,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAuthError('Tu cuenta no tiene acceso a este sistema. Contacta al administrador.');
       throw new Error('Acceso denegado');
     }
+    if (userDoc.exists() && (userDoc.data() as AppUser).status === 'inactivo') {
+      await signOut(auth);
+      setAuthError('Tu cuenta ha sido desactivada. Contacta al administrador.');
+      throw new Error('Cuenta inactiva');
+    }
   };
 
   const signInWithEmail = async (email: string, password: string) => {
     setAuthError('');
-    const userDoc = await getDoc(doc(db, 'users', email));
-    
-    if (!userDoc.exists() && email !== SUPER_ADMIN_EMAIL) {
+    // Primero se autentica: las reglas no permiten leer `users` sin sesión.
+    const { signInWithEmailAndPassword } = await import('firebase/auth');
+    const cred = await signInWithEmailAndPassword(auth, email, password);
+    const correo = cred.user.email || email;
+    // Correo no verificado: las reglas lo rechazan. Se envía la verificación y se cierra la sesión.
+    if (!cred.user.emailVerified) {
+      try { await sendEmailVerification(cred.user); } catch { /* límite de envíos: se informa igual */ }
+      await signOut(auth);
+      setAuthError('Te enviamos un correo para verificar tu cuenta. Ábrelo y vuelve a iniciar sesión.');
+      throw new Error('Correo sin verificar');
+    }
+    const userDoc = await getDoc(doc(db, 'users', correo));
+    if (!userDoc.exists() && correo !== SUPER_ADMIN_EMAIL) {
+      await signOut(auth);
       setAuthError('Tu cuenta no tiene acceso a este sistema. Contacta al administrador.');
       throw new Error('Acceso denegado');
     }
-    
-    if (userDoc.exists()) {
-       const data = userDoc.data() as AppUser;
-       if (data.status === 'inactivo') {
-         setAuthError('Tu cuenta ha sido desactivada. Contacta al administrador.');
-         throw new Error('Cuenta inactiva');
-       }
+    if (userDoc.exists() && (userDoc.data() as AppUser).status === 'inactivo') {
+      await signOut(auth);
+      setAuthError('Tu cuenta ha sido desactivada. Contacta al administrador.');
+      throw new Error('Cuenta inactiva');
     }
-
-    const { signInWithEmailAndPassword } = await import('firebase/auth');
-    await signInWithEmailAndPassword(auth, email, password);
   };
 
   const logout = async () => {

@@ -8,6 +8,7 @@ import {
 import { db } from '@/lib/firebase';
 import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole } from '@/types';
 import { INITIAL_PUMPS, PRICE_HISTORY } from '@/lib/constants';
+import { useAuth } from '@/contexts/AuthContext';
 
 const todayDoc = new Date().toISOString().split('T')[0];
 
@@ -50,8 +51,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [roles, setRoles] = useState<AppRole[]>([]);
   const [loading, setLoading] = useState(true);
+  const { appUser, loading: authLoading } = useAuth();
+  // Las reglas de Firestore solo permiten leer/escribir con sesión y ficha activa:
+  // la siembra y las suscripciones arrancan cuando hay un usuario autorizado.
+  const autorizado = !!appUser && appUser.status === 'activo';
 
   useEffect(() => {
+    if (!authLoading && !autorizado) {
+      // Sesión cerrada: no dejar en memoria datos del usuario anterior (p. ej. auditoría de un admin).
+      setPumpsState([]); setAuditLog([]); setPriceHistory([]); setReadingsState([]);
+      setUsers([]); setRoles([]); setDayData(null); setCurrentPricesState(DEFAULT_PRICES);
+      setLoading(false);
+    }
+    if (autorizado) setLoading(true);
+  }, [authLoading, autorizado]);
+
+  // Solo el administrador crea la configuración inicial (las reglas niegan esas escrituras al resto).
+  const puedeSembrar = autorizado && (appUser?.roleId === 'admin' || appUser?.email === 'melchisedec.bustamante@gmail.com');
+
+  useEffect(() => {
+    if (!puedeSembrar) return;
     async function seed() {
       const pumpsSnap = await getDocs(collection(db, 'pumps'));
       if (pumpsSnap.empty) {
@@ -104,19 +123,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
     seed().catch(console.error);
-  }, []);
+  }, [puedeSembrar]);
 
   useEffect(() => {
-    const loaded = { pumps: false, prices: false, audit: false, day: false, readings: false, users: false, roles: false };
+    if (!autorizado) return;
+    const loaded = { pumps: false, prices: false, day: false, readings: false, roles: false };
     const tryDone = () => {
-      if (loaded.pumps && loaded.prices && loaded.audit && loaded.day && loaded.readings && loaded.users && loaded.roles) setLoading(false);
+      if (loaded.pumps && loaded.prices && loaded.day && loaded.readings && loaded.roles) setLoading(false);
+    };
+    // Sin permiso para una colección (p. ej. auditoría para un operador) la carga no debe quedar colgada.
+    const sinPermiso = (k: keyof typeof loaded) => (e: Error) => {
+      console.warn(`Sin acceso a ${k}:`, e.message);
+      loaded[k] = true;
+      tryDone();
     };
 
     const unsubPumps = onSnapshot(collection(db, 'pumps'), snap => {
       setPumpsState(snap.docs.map(d => ({ id: d.id, ...d.data() } as Pump)));
       loaded.pumps = true;
       tryDone();
-    });
+    }, sinPermiso('pumps'));
 
     const unsubPrices = onSnapshot(
       query(collection(db, 'prices'), orderBy('timestamp', 'desc')),
@@ -128,16 +154,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         loaded.prices = true;
         tryDone();
-      }
-    );
-
-    const unsubAudit = onSnapshot(
-      query(collection(db, 'auditLog'), orderBy('timestamp', 'desc')),
-      snap => {
-        setAuditLog(snap.docs.map(d => ({ id: d.id, ...d.data() } as AuditEntry)));
-        loaded.audit = true;
-        tryDone();
-      }
+      },
+      sinPermiso('prices')
     );
 
     const unsubDay = onSnapshot(doc(db, 'dayStatus', todayDoc), snap => {
@@ -151,7 +169,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       loaded.day = true;
       tryDone();
-    });
+    }, sinPermiso('day'));
 
     const unsubReadings = onSnapshot(
       query(collection(db, 'readings'), where('date', '==', todayDoc)),
@@ -159,23 +177,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setReadingsState(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyReading)));
         loaded.readings = true;
         tryDone();
-      }
+      },
+      sinPermiso('readings')
     );
-
-    const unsubUsers = onSnapshot(collection(db, 'users'), snap => {
-      setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as AppUser)));
-      loaded.users = true;
-      tryDone();
-    });
 
     const unsubRoles = onSnapshot(collection(db, 'roles'), snap => {
       setRoles(snap.docs.map(d => ({ id: d.id, ...d.data() } as AppRole)));
       loaded.roles = true;
       tryDone();
-    });
+    }, sinPermiso('roles'));
 
-    return () => { unsubPumps(); unsubPrices(); unsubAudit(); unsubDay(); unsubReadings(); unsubUsers(); unsubRoles(); };
-  }, []);
+    return () => { unsubPumps(); unsubPrices(); unsubDay(); unsubReadings(); unsubRoles(); };
+  }, [autorizado, todayDoc]);
+
+  // Auditoría y usuarios solo para roles con permiso (las reglas los niegan al resto).
+  const permisos = roles.find(r => r.id === appUser?.roleId)?.permissions;
+  const verAuditoria = autorizado && permisos?.canViewAudit === true;
+  const verUsuarios = autorizado && permisos?.canManageUsers === true;
+
+  useEffect(() => {
+    if (!verAuditoria) { setAuditLog([]); return; }
+    return onSnapshot(
+      query(collection(db, 'auditLog'), orderBy('timestamp', 'desc')),
+      snap => setAuditLog(snap.docs.map(d => ({ id: d.id, ...d.data() } as AuditEntry))),
+      e => console.warn('Sin acceso a auditoría:', e.message),
+    );
+  }, [verAuditoria]);
+
+  useEffect(() => {
+    if (!verUsuarios) { setUsers([]); return; }
+    return onSnapshot(
+      collection(db, 'users'),
+      snap => setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as AppUser))),
+      e => console.warn('Sin acceso a usuarios:', e.message),
+    );
+  }, [verUsuarios]);
 
   const setPumps = useCallback(async (newPumps: Pump[]) => {
     const batch = writeBatch(db);
