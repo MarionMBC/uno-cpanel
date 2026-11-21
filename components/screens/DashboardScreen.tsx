@@ -10,6 +10,7 @@ import Icon from '@/components/ui/Icon';
 import { fmtL, fmtNum, getDayOfWeekEs, getMonthEs } from '@/lib/utils';
 import { LITERS_PER_GALLON, productosDeBomba } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
+import { calcVenta, lecturasPorDispensador, round } from '@/lib/totalizadores';
 
 const TREND_14D = (() => {
   const arr = [];
@@ -28,7 +29,7 @@ interface DashboardScreenProps {
 }
 
 export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
-  const { pumps, auditLog, dayStatus, readings, roles } = useApp();
+  const { pumps, auditLog, dayStatus, readings, roles, currentPrices } = useApp();
   const { user, appUser } = useAuth();
 
   const name = appUser?.name || user?.displayName?.split(' ')[0] || 'Usuario';
@@ -37,17 +38,16 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
   const today = new Date();
   const todayLabel = `${getDayOfWeekEs(today)} · ${today.getDate()} de ${getMonthEs(today)}, ${today.getFullYear()}`;
 
+  // Mismo cálculo y redondeo que Lectura final y el Cuadro (calcVenta), una lectura por dispensador.
   const totals = useMemo(() => {
     let l = 0; let m = 0;
-    readings.forEach(r => {
-      if (r.finalReading !== undefined) {
-        const liters = Math.max(0, r.finalReading - r.initialReading);
-        l += liters;
-        m += liters * r.fuelPrice;
-      }
+    lecturasPorDispensador(readings).forEach(r => {
+      const v = calcVenta(r, currentPrices);
+      if (v.estado === 'ok') { l += v.litros; m += v.total; }
     });
+    l = round(l, 3); m = round(m, 2);
     return { lempiras: m, liters: l, gallons: l / LITERS_PER_GALLON };
-  }, [readings]);
+  }, [readings, currentPrices]);
 
   const activePumps = pumps.filter(p => p.isActive);
   const totalActiveDispensers = activePumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status === 'activo'))).length;

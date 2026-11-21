@@ -80,7 +80,8 @@ export default function TotalizadoresScreen() {
   const lecturas = useMemo(() => (esHoy ? readings : otroListo?.lecturas ?? SIN_LECTURAS), [esHoy, readings, otroListo]);
   const dia = esHoy ? dayData : otroListo?.dia ?? null;
 
-  const cuadro = useMemo(() => buildCuadro(pumps, lecturas, currentPrices), [pumps, lecturas, currentPrices]);
+  // Fechas pasadas: filas desde las lecturas de esa fecha, no desde la configuración actual de bombas.
+  const cuadro = useMemo(() => buildCuadro(pumps, lecturas, currentPrices, { historico: !esHoy }), [pumps, lecturas, currentPrices, esHoy]);
 
   const diaCerrado = dia?.status === 'cerrado';
   const puedeEditar = roles.find(r => r.id === appUser?.roleId)?.permissions?.canCloseDay === true && !diaCerrado && !cargando && !errorCarga;
@@ -214,8 +215,14 @@ export default function TotalizadoresScreen() {
                           {f.fuelName}
                         </span>
                       </td>
-                      <td style={td}>{f.inicial !== null ? fmtNum(f.inicial, 3) : '—'}</td>
-                      <td style={{ ...td, color: mala ? '#dc2626' : td.color }}>{f.final !== null ? fmtNum(f.final, 3) : '—'}</td>
+                      <td style={td}>
+                        {f.inicial !== null ? fmtNum(f.inicial, 3) : '—'}
+                        {f.continuityBreak && <span title="La inicial no coincide con la final anterior (con motivo en auditoría)" style={{ marginLeft: 6 }}><Badge tone="warning" icon="alert">Continuidad</Badge></span>}
+                      </td>
+                      <td style={{ ...td, color: mala ? '#dc2626' : td.color }}>
+                        {f.final !== null ? fmtNum(f.final, 3) : '—'}
+                        {f.rollover && <span title="Litros = final + máximo del totalizador − inicial" style={{ marginLeft: 6 }}><Badge tone="info" icon="history">Vuelta a cero</Badge></span>}
+                      </td>
                       <td style={{ ...td, fontWeight: 700, color: '#0f172a' }}>{f.estado === 'ok' ? fmtNum(f.litros, 3) : <EstadoBadge f={f}/>}</td>
                       <td style={td}>{fmtNum(f.precio, 2)}</td>
                       <td style={{ ...td, fontWeight: 800, color: '#0f172a' }}>{f.estado === 'ok' ? fmtL(f.total) : '—'}</td>
