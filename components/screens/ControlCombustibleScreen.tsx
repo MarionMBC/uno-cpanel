@@ -314,7 +314,7 @@ export default function ControlCombustibleScreen() {
                   }}>{TABLAS[id].nombre} · {fmtNum(TABLAS[id].capacidad, 0)} gal</button>
                 ))}
               </div>
-              <TextField label="Varilla" suffix="pulg" value={consulta.pulg} onChange={v => { if (NUM.test(v)) setConsulta(c => ({ ...c, pulg: v })); }} style={{ width: 160 }}/>
+              <TextField label="Varilla" suffix="pulg" value={consulta.pulg} onChange={v => { if (NUM.test(v)) setConsulta(c => ({ ...c, pulg: v })); }} style={{ width: 160 }} inputStyle={{ minWidth: 0, width: '100%' }}/>
               <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', ...mono, paddingBottom: 6 }}>
                 {consulta.pulg === '' ? '—' : consultaGal === null ? <span style={{ fontSize: 13, color: '#dc2626' }}>Fuera de tabla</span> : `${fmtNum(consultaGal, 2)} gal`}
               </div>
