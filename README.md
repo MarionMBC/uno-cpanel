@@ -18,6 +18,10 @@ Los emuladores guardan en memoria: al reiniciarlos, correr `npm run seed:emu` de
 
 `firebase.emulator.json` usa `firestore.emulator.rules` (abiertas) y nunca se despliega; `firebase.json` es la config de producción.
 
+## Cuadro de totalizadores
+
+Menú **Cuadro de totalizadores**: lectura inicial y final de cada manguera (etiqueta `cara-manguera` por bomba), litros, precio por litro y total en lempiras, subtotales por bomba, resumen por producto, fondo de cambio y total en caja. Exporta a Excel con el formato del cuadro diario. Las mangueras sin lectura final quedan "Pendiente" y no suman (nunca totales negativos). El precio del sistema es **por litro**.
+
 ---
 
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).

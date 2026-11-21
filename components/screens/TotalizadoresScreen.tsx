@@ -47,6 +47,8 @@ export default function TotalizadoresScreen() {
   // Datos de otra fecha, etiquetados con la fecha que cargaron: nunca se muestran bajo otra fecha.
   const [otro, setOtro] = useState<{ fecha: string; lecturas: DailyReading[]; dia: DayStatus | null; error: boolean } | null>(null);
 
+  const [intento, setIntento] = useState(0);
+
   useEffect(() => {
     if (esHoy) return;
     let vivo = true;
@@ -70,17 +72,18 @@ export default function TotalizadoresScreen() {
       }
     })();
     return () => { vivo = false; };
-  }, [fecha, esHoy]);
+  }, [fecha, esHoy, intento]);
 
   const otroListo = otro?.fecha === fecha ? otro : null;
   const cargando = !esHoy && !otroListo;
+  const errorCarga = !esHoy && otroListo?.error === true;
   const lecturas = useMemo(() => (esHoy ? readings : otroListo?.lecturas ?? SIN_LECTURAS), [esHoy, readings, otroListo]);
   const dia = esHoy ? dayData : otroListo?.dia ?? null;
 
   const cuadro = useMemo(() => buildCuadro(pumps, lecturas, currentPrices), [pumps, lecturas, currentPrices]);
 
   const diaCerrado = dia?.status === 'cerrado';
-  const puedeEditar = roles.find(r => r.id === appUser?.roleId)?.permissions?.canCloseDay === true && !diaCerrado && !cargando;
+  const puedeEditar = roles.find(r => r.id === appUser?.roleId)?.permissions?.canCloseDay === true && !diaCerrado && !cargando && !errorCarga;
   const fondoGuardado = dia?.cashFund ?? 0;
   const [fondoTxt, setFondoTxt] = useState<string | null>(null);
   const fondo = fondoTxt !== null ? parseFloat(fondoTxt) || 0 : fondoGuardado;
@@ -91,8 +94,9 @@ export default function TotalizadoresScreen() {
     const f = fecha; // la fecha puede cambiar mientras se guarda
     setGuardando(true);
     try {
-      // Si el documento del día no existe todavía, se crea con el mismo estado por defecto que AppContext.
-      const base = dia ? {} : { status: 'en_proceso' as const };
+      // Nunca se escribe `status`: el estado del día solo lo cambian apertura/cierre. Si el documento de hoy
+      // no existía, se conserva el estado que ya muestra la app (el de AppContext) para no cambiar el badge.
+      const base = f === today && dayData?.status ? { status: dayData.status } : {};
       await setDoc(doc(db, 'dayStatus', f), { date: f, cashFund: fondo, ...base }, { merge: true });
       if (f !== today) {
         setOtro(o => (o && o.fecha === f ? { ...o, dia: { ...(o.dia || { date: f, status: 'en_proceso' }), cashFund: fondo } } : o));
@@ -145,7 +149,7 @@ export default function TotalizadoresScreen() {
                 style={{ height: 38, borderRadius: 9, border: '1px solid rgba(255,255,255,.2)', background: 'rgba(255,255,255,.08)', color: 'white', padding: '0 10px', fontFamily: 'inherit', fontSize: 13, colorScheme: 'dark' }}
               />
             </label>
-            <Button variant="accent" icon="download" onClick={exportar} disabled={cargando}>Exportar Excel</Button>
+            <Button variant="accent" icon="download" onClick={exportar} disabled={cargando || errorCarga}>Exportar Excel</Button>
           </div>
         </div>
       </Card>
@@ -157,7 +161,14 @@ export default function TotalizadoresScreen() {
         <StatCard tone="accent" label="Total en caja" icon="lock" value={fmtL(cuadro.total + fondo)} sub="ventas + cambio"/>
       </div>
 
-      {alertas.length > 0 && (
+      {errorCarga && (
+        <div role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderRadius: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 13, flexWrap: 'wrap' }}>
+          <span><strong>No se pudieron leer las lecturas del {fechaHN(fecha)}.</strong> El cuadro no está disponible.</span>
+          <Button variant="secondary" size="sm" icon="history" onClick={() => { setOtro(null); setIntento(n => n + 1); }}>Reintentar</Button>
+        </div>
+      )}
+
+      {!errorCarga && alertas.length > 0 && (
         <div role="status" style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '12px 16px', borderRadius: 12, background: '#fffbeb', border: '1px solid #fde68a', color: '#854d0e', fontSize: 13 }}>
           <Icon name="alert" size={16} style={{ marginTop: 1, flexShrink: 0 }}/>
           <div>
