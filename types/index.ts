@@ -67,6 +67,30 @@ export interface FuelReceipt {
   invoice?: string;
   plate?: string;
   timestamp: string;
+  /** Quien registró la pipa (nombre o correo). */
+  createdBy?: string;
+  /** Anulada: no suma al recibido; se conserva para auditoría. */
+  voided?: boolean;
+  voidReason?: string;
+  voidedBy?: string;
+  voidedAt?: string;
+}
+
+/** Resultado del cuadre guardado al "Guardar y Cuadrar" (galones, salvo diferenciaL). */
+export interface TankCuadre {
+  inicialGal: number;
+  recibidoGal: number;
+  vendidoGal: number;
+  teoricoGal: number;
+  finalGal: number;
+  diferenciaGal: number;
+  diferenciaL: number;
+  porcentaje: number | null;
+  /** |porcentaje| > 0,5 %. */
+  alerta: boolean;
+  provisional: boolean;
+  savedAt: string;
+  savedBy: string;
 }
 
 export interface DayStatus {
@@ -91,6 +115,8 @@ export interface DayStatus {
       /** Inventario en galones (de la tabla, o digitado si el tanque no tiene tabla). */
       initialGallons?: number;
       finalGallons?: number;
+      /** Cuadre del día guardado al cerrar el inventario. */
+      cuadre?: TankCuadre;
     }
   };
   receipts?: FuelReceipt[];

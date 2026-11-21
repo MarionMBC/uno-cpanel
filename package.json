@@ -9,7 +9,7 @@
     "lint": "eslint",
     "emulators": "node scripts/emulators.mjs",
     "seed:emu": "node scripts/seed-emulator.mjs",
-    "test": "node --experimental-strip-types --no-warnings --test lib/totalizadores.test.ts lib/calibracion.test.ts lib/preciosOficiales.test.ts lib/fecha.test.ts",
+    "test": "node --experimental-strip-types --no-warnings --test lib/totalizadores.test.ts lib/calibracion.test.ts lib/preciosOficiales.test.ts lib/fecha.test.ts lib/inventario.test.ts",
     "test:rules": "node scripts/test-rules.mjs"
   },
   "dependencies": {
