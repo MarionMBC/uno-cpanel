@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { collection, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 import { useApp } from '@/contexts/AppContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -12,29 +14,56 @@ import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
 import { Dispenser, DailyReading, Pump } from '@/types';
-import { diaOperativo } from '@/lib/fecha';
 import { fmtNum } from '@/lib/utils';
+import { finalAnterior, lecturasPorDispensador, rompeContinuidad } from '@/lib/totalizadores';
 
 interface ReadingValue {
   value: string;
   status: 'activo' | 'mantenimiento';
+  /** Motivo si la inicial difiere de la final anterior (continuidad). */
   obs: string;
 }
 
+// Lecturas anteriores que se revisan para precargar la inicial (≈10 días × 12 mangueras).
+const LECTURAS_PREVIAS = 120;
+const MOTIVO_MIN = 5;
+
 export default function LecturaInicialScreen() {
-  const { pumps, dayStatus, addAuditEntry, readings, saveReadings, currentPrices, roles } = useApp();
+  const { pumps, dayStatus, addAuditEntry, readings, createInitialReadings, currentPrices, roles, today } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmStatusChange, setConfirmStatusChange] = useState<{ id: string, status: 'activo'|'mantenimiento' } | null>(null);
 
   const activePumps = pumps.filter(p => p.isActive);
-  const allDisp: Dispenser[] = activePumps.flatMap(p => p.faces.flatMap(f => f.dispensers));
+  // Operables: bomba activa y dispensador no inactivo (mismo criterio que Lectura final y el Cuadro).
+  const allDisp: Dispenser[] = activePumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status !== 'inactivo')));
+  const lecturaDe = lecturasPorDispensador(readings);
+
+  // Final anterior por dispensador (continuidad): última lectura con final de una fecha previa.
+  const [anteriores, setAnteriores] = useState<{ fecha: string; porDisp: Record<string, { fecha: string; valor: number }> } | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    getDocs(query(collection(db, 'readings'), where('date', '<', today), orderBy('date', 'desc'), limit(LECTURAS_PREVIAS)))
+      .then(snap => {
+        if (!vivo) return;
+        const previas = snap.docs.map(d => d.data() as DailyReading);
+        const porDisp: Record<string, { fecha: string; valor: number }> = {};
+        new Set(previas.map(r => r.dispenserId)).forEach(id => {
+          const f = finalAnterior(previas, id, today);
+          if (f) porDisp[id] = f;
+        });
+        setAnteriores({ fecha: today, porDisp });
+      })
+      .catch(e => { console.warn('Sin lecturas anteriores:', e); if (vivo) setAnteriores({ fecha: today, porDisp: {} }); });
+    return () => { vivo = false; };
+  }, [today]);
+  const previaDe = (id: string) => (anteriores?.fecha === today ? anteriores.porDisp[id] ?? null : null);
 
   const [values, setValues] = useState<Record<string, ReadingValue>>(() => {
     const o: Record<string, ReadingValue> = {};
     allDisp.forEach(d => { 
-      const existing = readings.find(r => r.dispenserId === d.id);
+      const existing = lecturaDe.get(d.id);
       o[d.id] = { 
         value: existing ? existing.initialReading.toString() : '', 
         status: existing ? existing.status : (d.status === 'inactivo' ? 'activo' : d.status), 
@@ -110,7 +139,7 @@ export default function LecturaInicialScreen() {
       setValues(prev => {
         const o = { ...prev };
         let changed = false;
-        readings.forEach(r => {
+        lecturasPorDispensador(readings).forEach(r => {
           if (!o[r.dispenserId] || o[r.dispenserId].value !== r.initialReading.toString()) {
             o[r.dispenserId] = { value: r.initialReading.toString(), status: r.status, obs: '' };
             changed = true;
@@ -120,6 +149,27 @@ export default function LecturaInicialScreen() {
       });
     }
   }, [readings]);
+
+  // Precarga: la inicial sugerida es la final anterior del mismo dispensador (solo si el campo está vacío).
+  useEffect(() => {
+    if (!anteriores || anteriores.fecha !== today) return;
+    setValues(prev => {
+      let changed = false;
+      const next = { ...prev };
+      Object.entries(anteriores.porDisp).forEach(([id, f]) => {
+        if (next[id] && next[id].value === '') { next[id] = { ...next[id], value: String(f.valor) }; changed = true; }
+      });
+      return changed ? next : prev;
+    });
+  }, [anteriores, today]);
+
+  /** Inicial digitada que no coincide con la final anterior (requiere motivo). */
+  const rompe = (id: string) => {
+    const v = values[id];
+    if (!v || v.status !== 'activo' || v.value === '' || lecturaDe.has(id)) return false;
+    const n = parseFloat(v.value);
+    return !isNaN(n) && rompeContinuidad(n, previaDe(id)?.valor);
+  };
 
   const isClosed = dayStatus === 'cerrado';
   const completed = Object.values(values).filter(v => v.value !== '' && !isNaN(parseFloat(v.value)) && v.status === 'activo').length;
@@ -152,9 +202,10 @@ export default function LecturaInicialScreen() {
     
     const o: Record<string, ReadingValue> = {};
     allDisp.forEach(d => { 
-      const existing = readings.find(r => r.dispenserId === d.id);
+      const existing = lecturaDe.get(d.id);
+      const previa = previaDe(d.id);
       o[d.id] = { 
-        value: existing ? existing.initialReading.toString() : '', 
+        value: existing ? existing.initialReading.toString() : previa ? String(previa.valor) : '', 
         status: existing ? existing.status : (d.status === 'inactivo' ? 'activo' : d.status), 
         obs: '' 
       }; 
@@ -177,7 +228,13 @@ export default function LecturaInicialScreen() {
       return;
     }
 
-    const unconfirmed = allDisp.filter(d => !readings.find(r => r.dispenserId === d.id));
+    const sinMotivo = allDisp.filter(d => rompe(d.id) && (values[d.id]?.obs || '').trim().length < MOTIVO_MIN);
+    if (sinMotivo.length > 0) {
+      toast.error('Falta el motivo', `${sinMotivo.length} lectura${sinMotivo.length > 1 ? 's' : ''} no coincide${sinMotivo.length > 1 ? 'n' : ''} con la final anterior. Escribe el motivo (mínimo ${MOTIVO_MIN} caracteres).`);
+      return;
+    }
+
+    const unconfirmed = allDisp.filter(d => !lecturaDe.has(d.id));
     if (unconfirmed.length === 0) {
       toast.error('Ya registradas', 'Todas las lecturas iniciales ya fueron confirmadas para hoy.');
       return;
@@ -187,51 +244,87 @@ export default function LecturaInicialScreen() {
   };
 
   const handleConfirm = async () => {
-    const today = diaOperativo(); // mismo día operativo (hora de Honduras) que AppContext
+    const fecha = today; // día operativo del contexto (hora de Honduras)
+    const ahora = new Date().toISOString();
+    const autor = appUser?.email || appUser?.name || 'unknown';
     const newReadings: DailyReading[] = [];
-    
+
     allDisp.forEach(d => {
       const v = values[d.id];
-      const existing = readings.find(r => r.dispenserId === d.id);
-      
-      if (!existing && (v.value !== '' || v.status === 'mantenimiento')) {
-        newReadings.push({
-          date: today,
-          dispenserId: d.id,
-          dispenserName: d.name,
-          face: d.face,
-          pumpId: d.pumpId,
-          pumpName: d.pumpName,
-          fuelId: d.fuel,
-          fuelName: d.fuelName,
-          fuelPrice: currentPrices[d.fuel as 'super' | 'regular' | 'diesel'] || 0,
-          initialReading: parseFloat(v.value) || 0,
-          status: v.status,
-        });
-      }
+      if (!v || lecturaDe.has(d.id)) return;
+      if (v.value === '' && v.status !== 'mantenimiento') return;
+      const previa = previaDe(d.id);
+      // Mantenimiento sin valor conserva la final anterior en vez de grabar 0.
+      const inicial = v.value !== '' ? parseFloat(v.value) || 0 : previa?.valor ?? 0;
+      const ruptura = rompe(d.id);
+      newReadings.push({
+        date: fecha,
+        dispenserId: d.id,
+        dispenserName: d.name,
+        face: d.face,
+        pumpId: d.pumpId,
+        pumpName: d.pumpName,
+        fuelId: d.fuel,
+        fuelName: d.fuelName,
+        fuelPrice: currentPrices[d.fuel as 'super' | 'regular' | 'diesel'] || 0,
+        initialReading: inicial,
+        status: v.status,
+        createdBy: autor,
+        createdAt: ahora,
+        ...(previa ? { previousFinal: previa.valor } : {}),
+        ...(ruptura ? { continuityBreak: true, continuityReason: v.obs.trim() } : {}),
+      });
     });
 
-    if (newReadings.length > 0) {
-      await saveReadings(newReadings);
+    let res = { creadas: [] as string[], existentes: [] as string[] };
+    try {
+      if (newReadings.length > 0) res = await createInitialReadings(newReadings);
+    } catch (e) {
+      console.error(e);
+      toast.error('No se guardó', 'Revisa la conexión e intenta de nuevo.');
+      setConfirmOpen(false);
+      return;
     }
 
     localStorage.removeItem('lectura_inicial_draft');
     setDraftExists(false);
-    
+
     const roleName = roles.find(r => r.id === appUser?.roleId)?.name || 'Desconocido';
-    addAuditEntry({
+    const base = {
       timestamp: new Date().toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' }),
       date: new Date().toLocaleDateString('es-HN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
       userId: appUser?.uid || 'unknown',
       userName: appUser?.name || 'Sistema',
       userRole: roleName,
-      action: 'Lectura inicial',
-      target: `${newReadings.length} dispensadores`,
-      detail: `Registradas para el día actual.`,
-      icon: 'log-in',
-    });
-    toast.success('Lecturas iniciales registradas', `Dispensadores actualizados correctamente.`);
-    
+    };
+    const creadas = newReadings.filter(r => res.creadas.includes(r.dispenserId));
+    if (creadas.length > 0) {
+      await addAuditEntry({
+        ...base,
+        action: 'Lectura inicial',
+        target: `${creadas.length} dispensadores`,
+        detail: creadas.map(r => `${r.pumpName} ${r.face}-${r.dispenserName.slice(-1)}: ${r.status === 'mantenimiento' ? 'mant.' : r.initialReading}`).join(' · '),
+        icon: 'log-in',
+      });
+    }
+    for (const r of creadas.filter(c => c.continuityBreak)) {
+      await addAuditEntry({
+        ...base,
+        action: 'Continuidad de totalizador',
+        target: `${r.pumpName} ${r.face}-${r.dispenserName.slice(-1)} (${r.fuelName})`,
+        detail: `Inicial distinta de la final anterior`,
+        icon: 'alert',
+        before: r.previousFinal,
+        after: r.initialReading,
+        reason: r.continuityReason,
+      });
+    }
+
+    if (res.existentes.length > 0) {
+      toast.error('Ya registrada', `${res.existentes.length} lectura${res.existentes.length > 1 ? 's' : ''} inicial${res.existentes.length > 1 ? 'es' : ''} ya ${res.existentes.length > 1 ? 'estaban registradas' : 'estaba registrada'} por otro usuario; se conserva la primera.`);
+    }
+    if (creadas.length > 0) toast.success('Lecturas iniciales registradas', `${creadas.length} dispensadores actualizados correctamente.`);
+
     setConfirmOpen(false);
   };
 
@@ -331,7 +424,9 @@ export default function LecturaInicialScreen() {
                   {face.dispensers.map((d) => {
                     const v = values[d.id] || { value: '', status: 'activo', obs: '' };
                     const isMaint = v.status === 'mantenimiento';
-                    const hasReading = !!readings.find(r => r.dispenserId === d.id);
+                    const hasReading = lecturaDe.has(d.id);
+                    const previa = previaDe(d.id);
+                    const ruptura = rompe(d.id);
                     
                     return (
                       <div key={d.id} className="lectura-row" style={{
@@ -355,7 +450,17 @@ export default function LecturaInicialScreen() {
                           }}
                           suffix="ltrs"
                           disabled={isMaint || isClosed || hasReading}
+                          hint={previa && !hasReading && !isMaint ? `Final anterior (${previa.fecha.split('-').reverse().join('/')}): ${fmtNum(previa.valor, 3)}` : undefined}
+                          error={ruptura ? 'No coincide con la final anterior' : undefined}
                         />
+                        {ruptura && (
+                          <TextField
+                            placeholder="Motivo de la diferencia (obligatorio)"
+                            value={v.obs}
+                            onChange={(val) => setValues(s => ({ ...s, [d.id]: { ...s[d.id], obs: val } }))}
+                            disabled={isClosed}
+                          />
+                        )}
                         <div style={{ display: 'flex', gap: 4 }}>
                           {(['activo', 'mantenimiento'] as const).map((st) => (
                             <button key={st} onClick={() => {
@@ -409,7 +514,7 @@ export default function LecturaInicialScreen() {
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         title="Confirmar lectura inicial del día"
-        message={`Vas a registrar de forma definitiva las lecturas. Una vez confirmadas no se podrán editar ni duplicar para esta fecha.`}
+        message={`Vas a registrar de forma definitiva las lecturas. Una vez confirmadas no se podrán duplicar para esta fecha; solo se corrigen desde Lectura final, con motivo y permiso de cierre.`}
         confirmLabel="Sí, confirmar lecturas"
         icon="log-in"
         tone="primary"
