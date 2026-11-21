@@ -12,7 +12,15 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Prototipo de Claude Design (referencia, no se compila) y Cloud Functions (paquete aparte).
+    "project/**",
+    "functions/**",
   ]),
+  {
+    // Deuda heredada: varias pantallas copian datos de Firestore al estado del formulario en un
+    // effect. Se deja visible como warning hasta refactorizarlas (ver .agent/known-issues.md).
+    rules: { "react-hooks/set-state-in-effect": "warn" },
+  },
 ]);
 
 export default eslintConfig;

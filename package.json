@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "emulators": "node scripts/emulators.mjs",
+    "seed:emu": "node scripts/seed-emulator.mjs"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

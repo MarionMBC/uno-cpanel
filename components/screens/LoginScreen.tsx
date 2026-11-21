@@ -18,8 +18,8 @@ export default function LoginScreen() {
     setError('');
     try {
       await signInWithGoogle();
-    } catch (e: any) {
-      setError(authError || e.message || 'Error al iniciar sesión con Google');
+    } catch (e: unknown) {
+      setError(authError || (e instanceof Error ? e.message : '') || 'Error al iniciar sesión con Google');
     } finally {
       setLoading(false);
     }
@@ -31,7 +31,7 @@ export default function LoginScreen() {
     setError('');
     try {
       await signInWithEmail(email, password);
-    } catch (e: any) {
+    } catch {
       setError('Correo o contraseña incorrectos');
     } finally {
       setLoading(false);

@@ -52,7 +52,7 @@ export default function ReporteDiarioScreen() {
   const isClosed = dayStatus === 'cerrado';
 
   const exportExcel = () => {
-    const rows: Record<string, any>[] = [];
+    const rows: Record<string, string | number>[] = [];
     byPump.forEach(b => {
       b.dispensers.forEach(d => {
         rows.push({

@@ -162,8 +162,8 @@ export default function UsuariosScreen() {
                   { key: 'canManageUsers', label: 'Administrar usuarios y roles' },
                 ].map(p => (
                   <div key={p.key} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#475569' }}>
-                    <Icon name={(role.permissions as any)[p.key] ? 'check' : 'minus'} size={14} style={{ color: (role.permissions as any)[p.key] ? '#16a34a' : '#cbd5e1' }}/>
-                    {(role.permissions as any)[p.key] ? <span style={{ fontWeight: 600 }}>{p.label}</span> : <span style={{ textDecoration: 'line-through', color: '#94a3b8' }}>{p.label}</span>}
+                    <Icon name={role.permissions[p.key as keyof typeof role.permissions] ? 'check' : 'minus'} size={14} style={{ color: role.permissions[p.key as keyof typeof role.permissions] ? '#16a34a' : '#cbd5e1' }}/>
+                    {role.permissions[p.key as keyof typeof role.permissions] ? <span style={{ fontWeight: 600 }}>{p.label}</span> : <span style={{ textDecoration: 'line-through', color: '#94a3b8' }}>{p.label}</span>}
                   </div>
                 ))}
               </div>
