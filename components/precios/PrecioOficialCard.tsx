@@ -10,6 +10,7 @@ import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import { useToast } from '@/contexts/ToastContext';
 import { fmtNum } from '@/lib/utils';
+import { DEFAULT_DIFERENCIAL_POR_LITRO } from '@/lib/constants';
 import {
   extraerPrecios, notaCompleta, diferencias, porLitro, esNotaDePrecios, PreciosNota,
 } from '@/lib/preciosOficiales';
@@ -67,7 +68,8 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
   const [res, setRes] = useState<Resultado | null>(null);
-  const [dif, setDif] = useState<Record<Clave, string>>({ super: '0', regular: '0', diesel: '0' });
+  const DIF_DEF = { super: String(DEFAULT_DIFERENCIAL_POR_LITRO.super), regular: String(DEFAULT_DIFERENCIAL_POR_LITRO.regular), diesel: String(DEFAULT_DIFERENCIAL_POR_LITRO.diesel) };
+  const [dif, setDif] = useState<Record<Clave, string>>(DIF_DEF);
   const [difGuardado, setDifGuardado] = useState<Record<Clave, string> | null>(null);
   const [verificado, setVerificado] = useState(false);
 
@@ -130,7 +132,7 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
   const todosValidos = PRODUCTOS.every(p => sugerido(p.id) != null);
   const hayDudas = res?.coinciden !== true || PRODUCTOS.some(p => Math.abs(salto(p.id) ?? 0) > SALTO_ALERTA);
   const puedeUsar = puedeEditar && todosValidos && (!hayDudas || verificado);
-  const difCambiado = JSON.stringify(dif) !== JSON.stringify(difGuardado ?? { super: '0', regular: '0', diesel: '0' });
+  const difCambiado = JSON.stringify(dif) !== JSON.stringify(difGuardado ?? DIF_DEF);
 
   const guardarDif = async () => {
     if (!PRODUCTOS.every(p => difValido(p.id))) {

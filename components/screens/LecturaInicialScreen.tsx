@@ -308,12 +308,12 @@ export default function LecturaInicialScreen() {
         <Card key={p.id} padding={0}>
           <div style={{ padding: '14px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 9, background: p.fuel.color + '22', color: p.fuel.color, display: 'grid', placeItems: 'center' }}>
+              <div style={{ width: 38, height: 38, borderRadius: 9, background: '#fbbf2422', color: '#d97706', display: 'grid', placeItems: 'center' }}>
                 <Icon name="fuel" size={18}/>
               </div>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>{p.name}</div>
-                <div style={{ fontSize: 11.5, color: '#64748b' }}>{getPumpFuelsText(p)} · {p.faces.length} caras · {getPumpDispCount(p)} dispensadores</div>
+                <div style={{ fontSize: 11.5, color: '#64748b' }}>{getPumpFuelsText(p)} · {p.faces.length} caras · {getPumpDispCount(p)} mangueras</div>
               </div>
             </div>
             <Badge tone="success" icon="check">Listo para abrir</Badge>

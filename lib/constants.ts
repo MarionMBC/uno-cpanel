@@ -1,103 +1,67 @@
-import { Fuel, Pump } from '@/types';
+import { Dispenser, Fuel, Pump } from '@/types';
 
 export const LITERS_PER_GALLON = 3.78541;
 
+// Precios por LITRO (todo el sistema calcula litros × precio por litro).
+// Semilla = precio oficial SEN vigente desde el lunes 23/11/2026 en Tegucigalpa (L/galón ÷ 3.78541)
+// + diferencial de Guaimaca derivado del cuadro de la estación del 27/04/2026 (precio estación − SEN).
+// El admin los actualiza cada semana desde "Precio del combustible" → "Consultar precio oficial".
+export const DEFAULT_DIFERENCIAL_POR_LITRO = { super: 1.11, regular: 0.4, diesel: -0.29 } as const;
+
 export const FUELS: Fuel[] = [
-  { id: 'super', name: 'Súper', color: '#ef4444', price: 108.42 },
-  { id: 'regular', name: 'Regular', color: '#22c55e', price: 102.18 },
-  { id: 'diesel', name: 'Diésel', color: '#f59e0b', price: 96.74 },
+  { id: 'super', name: 'Súper', color: '#ef4444', price: 37.42 },
+  { id: 'regular', name: 'Regular', color: '#22c55e', price: 32.84 },
+  { id: 'diesel', name: 'Diésel', color: '#f59e0b', price: 40.05 },
 ];
 
-export const INITIAL_PUMPS: Pump[] = [
-  {
-    id: 'p1',
-    name: 'Bomba 01',
+const fuel = (id: string) => FUELS.find(f => f.id === id) as Fuel;
+
+// Estación UNO Guaimaca Centro (cuadro de totalizadores): 2 bombas × 2 caras × 3 mangueras.
+// Manguera 1 = Regular, 2 = Súper, 3 = Diésel.
+const MANGUERAS = ['regular', 'super', 'diesel'];
+
+function bomba(n: number): Pump {
+  const id = `p${n}`;
+  const name = `Bomba 0${n}`;
+  return {
+    id,
+    name,
     isActive: true,
-    fuel: FUELS[0],
-    faces: [
-      {
-        id: 'A',
-        dispensers: [
-          { id: 'p1-A-1', name: 'Dispensador 1', face: 'A', pumpId: 'p1', pumpName: 'Bomba 01', fuel: 'super', fuelName: 'Súper', fuelColor: '#ef4444', status: 'activo' },
-          { id: 'p1-A-2', name: 'Dispensador 2', face: 'A', pumpId: 'p1', pumpName: 'Bomba 01', fuel: 'super', fuelName: 'Súper', fuelColor: '#ef4444', status: 'activo' },
-          { id: 'p1-A-3', name: 'Dispensador 3', face: 'A', pumpId: 'p1', pumpName: 'Bomba 01', fuel: 'super', fuelName: 'Súper', fuelColor: '#ef4444', status: 'activo' },
-        ],
-      },
-      {
-        id: 'B',
-        dispensers: [
-          { id: 'p1-B-1', name: 'Dispensador 1', face: 'B', pumpId: 'p1', pumpName: 'Bomba 01', fuel: 'super', fuelName: 'Súper', fuelColor: '#ef4444', status: 'activo' },
-          { id: 'p1-B-2', name: 'Dispensador 2', face: 'B', pumpId: 'p1', pumpName: 'Bomba 01', fuel: 'super', fuelName: 'Súper', fuelColor: '#ef4444', status: 'activo' },
-          { id: 'p1-B-3', name: 'Dispensador 3', face: 'B', pumpId: 'p1', pumpName: 'Bomba 01', fuel: 'super', fuelName: 'Súper', fuelColor: '#ef4444', status: 'activo' },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'p2',
-    name: 'Bomba 02',
-    isActive: true,
-    fuel: FUELS[1],
-    faces: [
-      {
-        id: 'A',
-        dispensers: [
-          { id: 'p2-A-1', name: 'Dispensador 1', face: 'A', pumpId: 'p2', pumpName: 'Bomba 02', fuel: 'regular', fuelName: 'Regular', fuelColor: '#22c55e', status: 'activo' },
-          { id: 'p2-A-2', name: 'Dispensador 2', face: 'A', pumpId: 'p2', pumpName: 'Bomba 02', fuel: 'regular', fuelName: 'Regular', fuelColor: '#22c55e', status: 'activo' },
-          { id: 'p2-A-3', name: 'Dispensador 3', face: 'A', pumpId: 'p2', pumpName: 'Bomba 02', fuel: 'regular', fuelName: 'Regular', fuelColor: '#22c55e', status: 'mantenimiento' },
-        ],
-      },
-      {
-        id: 'B',
-        dispensers: [
-          { id: 'p2-B-1', name: 'Dispensador 1', face: 'B', pumpId: 'p2', pumpName: 'Bomba 02', fuel: 'regular', fuelName: 'Regular', fuelColor: '#22c55e', status: 'activo' },
-          { id: 'p2-B-2', name: 'Dispensador 2', face: 'B', pumpId: 'p2', pumpName: 'Bomba 02', fuel: 'regular', fuelName: 'Regular', fuelColor: '#22c55e', status: 'activo' },
-          { id: 'p2-B-3', name: 'Dispensador 3', face: 'B', pumpId: 'p2', pumpName: 'Bomba 02', fuel: 'regular', fuelName: 'Regular', fuelColor: '#22c55e', status: 'activo' },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'p3',
-    name: 'Bomba 03',
-    isActive: false,
-    fuel: FUELS[2],
-    faces: [
-      {
-        id: 'A',
-        dispensers: [
-          { id: 'p3-A-1', name: 'Dispensador 1', face: 'A', pumpId: 'p3', pumpName: 'Bomba 03', fuel: 'diesel', fuelName: 'Diésel', fuelColor: '#f59e0b', status: 'activo' },
-          { id: 'p3-A-2', name: 'Dispensador 2', face: 'A', pumpId: 'p3', pumpName: 'Bomba 03', fuel: 'diesel', fuelName: 'Diésel', fuelColor: '#f59e0b', status: 'activo' },
-          { id: 'p3-A-3', name: 'Dispensador 3', face: 'A', pumpId: 'p3', pumpName: 'Bomba 03', fuel: 'diesel', fuelName: 'Diésel', fuelColor: '#f59e0b', status: 'activo' },
-        ],
-      },
-      {
-        id: 'B',
-        dispensers: [
-          { id: 'p3-B-1', name: 'Dispensador 1', face: 'B', pumpId: 'p3', pumpName: 'Bomba 03', fuel: 'diesel', fuelName: 'Diésel', fuelColor: '#f59e0b', status: 'activo' },
-          { id: 'p3-B-2', name: 'Dispensador 2', face: 'B', pumpId: 'p3', pumpName: 'Bomba 03', fuel: 'diesel', fuelName: 'Diésel', fuelColor: '#f59e0b', status: 'activo' },
-          { id: 'p3-B-3', name: 'Dispensador 3', face: 'B', pumpId: 'p3', pumpName: 'Bomba 03', fuel: 'diesel', fuelName: 'Diésel', fuelColor: '#f59e0b', status: 'activo' },
-        ],
-      },
-    ],
-  },
-];
+    fuel: fuel('regular'),
+    faces: ['A', 'B'].map(face => ({
+      id: face,
+      dispensers: MANGUERAS.map((fid, i): Dispenser => ({
+        id: `${id}-${face}-${i + 1}`,
+        name: `Manguera ${i + 1}`,
+        face,
+        pumpId: id,
+        pumpName: name,
+        fuel: fid,
+        fuelName: fuel(fid).name,
+        fuelColor: fuel(fid).color,
+        status: 'activo',
+      })),
+    })),
+  };
+}
 
-export const AUDIT_LOG_INITIAL = [
-  { id: 'a1', timestamp: '06:42', date: '26/04/2026', userName: 'Marlon Aguilar', userRole: 'Operador', action: 'Lectura inicial', target: 'Bomba 01 · Cara A · D1', detail: 'Registrada en 142,318.42 L', icon: 'log-in' },
-  { id: 'a2', timestamp: '06:43', date: '26/04/2026', userName: 'Marlon Aguilar', userRole: 'Operador', action: 'Lectura inicial', target: 'Bomba 01 · Cara A · D2', detail: 'Registrada en 138,902.10 L', icon: 'log-in' },
-  { id: 'a3', timestamp: '06:51', date: '26/04/2026', userName: 'Marlon Aguilar', userRole: 'Operador', action: 'Lectura inicial', target: 'Bomba 02 · Cara B · D3', detail: 'Estado: mantenimiento', icon: 'wrench' },
-  { id: 'a4', timestamp: '07:05', date: '26/04/2026', userName: 'Cinthia López', userRole: 'Admin', action: 'Precio actualizado', target: 'Súper', detail: 'L. 107.10 → L. 108.42', icon: 'tag' },
-  { id: 'a5', timestamp: '07:06', date: '26/04/2026', userName: 'Cinthia López', userRole: 'Admin', action: 'Precio actualizado', target: 'Regular', detail: 'L. 101.55 → L. 102.18', icon: 'tag' },
-  { id: 'a6', timestamp: '14:18', date: '25/04/2026', userName: 'Daniel Ortez', userRole: 'Supervisor', action: 'Lectura final', target: 'Bomba 02 · Cara A · D1', detail: '+312.40 L · L. 31,919.95', icon: 'log-out' },
-  { id: 'a7', timestamp: '14:32', date: '25/04/2026', userName: 'Daniel Ortez', userRole: 'Supervisor', action: 'Cierre del día', target: '25/04/2026', detail: 'Total L. 412,860.71', icon: 'lock' },
-  { id: 'a8', timestamp: '08:14', date: '25/04/2026', userName: 'Marlon Aguilar', userRole: 'Operador', action: 'Edición', target: 'Bomba 01 · Cara A · D2', detail: 'Lectura inicial 138,118 → 138,902', icon: 'edit' },
-];
+export const INITIAL_PUMPS: Pump[] = [bomba(1), bomba(2)];
 
+/** Primera entrada del historial de precios (por litro). */
 export const PRICE_HISTORY = [
-  { id: 'ph1', date: '26/04/2026', super: 108.42, regular: 102.18, diesel: 96.74, registeredBy: 'Cinthia López' },
-  { id: 'ph2', date: '20/04/2026', super: 107.10, regular: 101.55, diesel: 95.90, registeredBy: 'Cinthia López' },
-  { id: 'ph3', date: '13/04/2026', super: 106.74, regular: 100.82, diesel: 95.41, registeredBy: 'Cinthia López' },
-  { id: 'ph4', date: '06/04/2026', super: 105.22, regular: 99.65, diesel: 94.18, registeredBy: 'Daniel Ortez' },
-  { id: 'ph5', date: '30/03/2026', super: 104.10, regular: 98.40, diesel: 93.05, registeredBy: 'Cinthia López' },
+  {
+    id: 'oficial-2026-11-23',
+    date: '23/11/2026',
+    super: 37.42,
+    regular: 32.84,
+    diesel: 40.05,
+    registeredBy: 'Precio oficial SEN (Tegucigalpa) + diferencial Guaimaca',
+  },
 ];
+
+/** Productos que despacha una bomba según sus mangueras (una bomba puede tener varios). */
+export const productosDeBomba = (p: Pump): Fuel[] => {
+  const ids = Array.from(new Set(p.faces.flatMap(f => f.dispensers.map(d => d.fuel))));
+  const lista = ids.map(id => FUELS.find(f => f.id === id)).filter((f): f is Fuel => !!f);
+  return lista.length ? lista : [p.fuel];
+};

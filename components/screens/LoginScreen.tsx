@@ -83,8 +83,8 @@ export default function LoginScreen() {
           </div>
           <div style={{ display: 'flex', gap: 28, marginTop: 36 }}>
             {[
-              { v: '3', l: 'Bombas activas' },
-              { v: '18', l: 'Dispensadores' },
+              { v: '2', l: 'Bombas' },
+              { v: '12', l: 'Mangueras' },
               { v: '24/7', l: 'Auditoría' },
             ].map((s) => (
               <div key={s.l}>
@@ -96,7 +96,7 @@ export default function LoginScreen() {
         </div>
 
         <div style={{ position: 'relative', fontSize: 11, color: '#64748b', display: 'flex', justifyContent: 'space-between' }}>
-          <span>v2.4.1 · Estación Guaimaca Centro</span>
+          <span>UNO · Estación Guaimaca Centro</span>
           <span>© 2026 Operaciones Combustibles</span>
         </div>
       </div>
