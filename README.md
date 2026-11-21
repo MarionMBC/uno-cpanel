@@ -18,6 +18,10 @@ Los emuladores guardan en memoria: al reiniciarlos, correr `npm run seed:emu` de
 
 `firebase.emulator.json` usa `firestore.emulator.rules` (abiertas) y nunca se despliega; `firebase.json` es la config de producción.
 
+## Control de combustible y evaporación
+
+Menú **Control inventario**: varilla de tanques en **pulgadas** → galones con las tablas de calibración de la estación (`lib/calibracion.ts`: Diésel 5016 gal hasta 71.50 pulg, Súper 5040 gal hasta 70.75 pulg; entre puntos se interpola). Regular no tiene tabla cargada: se digita en galones. Pipas en galones. El cuadre por tanque compara inicial + pipas − vendido (totalizadores, L ÷ 3.78541) contra la varilla final y muestra el faltante/evaporación en gal, L y %. La pestaña **Tablas de calibración** tiene consulta rápida y marca 3 valores de la hoja impresa a revisar.
+
 ## Cuadro de totalizadores
 
 Menú **Cuadro de totalizadores**: lectura inicial y final de cada manguera (etiqueta `cara-manguera` por bomba), litros, precio por litro y total en lempiras, subtotales por bomba, resumen por producto, fondo de cambio y total en caja. Exporta a Excel con el formato del cuadro diario. Las mangueras sin lectura final quedan "Pendiente" y no suman (nunca totales negativos). El precio del sistema es **por litro**.
