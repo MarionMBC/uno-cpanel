@@ -40,6 +40,20 @@ export default function LecturaInicialScreen() {
   const allDisp: Dispenser[] = activePumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status !== 'inactivo')));
   const lecturaDe = lecturasPorDispensador(readings);
 
+
+  const [values, setValues] = useState<Record<string, ReadingValue>>(() => {
+    const o: Record<string, ReadingValue> = {};
+    allDisp.forEach(d => { 
+      const existing = lecturaDe.get(d.id);
+      o[d.id] = { 
+        value: existing ? existing.initialReading.toString() : '', 
+        status: existing ? existing.status : (d.status === 'inactivo' ? 'activo' : d.status), 
+        obs: '' 
+      }; 
+    });
+    return o;
+  });
+
   // Final anterior por dispensador (continuidad): última lectura con final de una fecha previa.
   const [anteriores, setAnteriores] = useState<{ fecha: string; porDisp: Record<string, { fecha: string; valor: number }> } | null>(null);
   useEffect(() => {
@@ -54,24 +68,20 @@ export default function LecturaInicialScreen() {
           if (f) porDisp[id] = f;
         });
         setAnteriores({ fecha: today, porDisp });
+        // Precarga: la inicial sugerida es la final anterior del mismo dispensador (solo campos vacíos).
+        setValues(prev => {
+          let changed = false;
+          const next = { ...prev };
+          Object.entries(porDisp).forEach(([id, f]) => {
+            if (next[id] && next[id].value === '') { next[id] = { ...next[id], value: String(f.valor) }; changed = true; }
+          });
+          return changed ? next : prev;
+        });
       })
       .catch(e => { console.warn('Sin lecturas anteriores:', e); if (vivo) setAnteriores({ fecha: today, porDisp: {} }); });
     return () => { vivo = false; };
   }, [today]);
   const previaDe = (id: string) => (anteriores?.fecha === today ? anteriores.porDisp[id] ?? null : null);
-
-  const [values, setValues] = useState<Record<string, ReadingValue>>(() => {
-    const o: Record<string, ReadingValue> = {};
-    allDisp.forEach(d => { 
-      const existing = lecturaDe.get(d.id);
-      o[d.id] = { 
-        value: existing ? existing.initialReading.toString() : '', 
-        status: existing ? existing.status : (d.status === 'inactivo' ? 'activo' : d.status), 
-        obs: '' 
-      }; 
-    });
-    return o;
-  });
 
   const [draftExists, setDraftExists] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -149,19 +159,6 @@ export default function LecturaInicialScreen() {
       });
     }
   }, [readings]);
-
-  // Precarga: la inicial sugerida es la final anterior del mismo dispensador (solo si el campo está vacío).
-  useEffect(() => {
-    if (!anteriores || anteriores.fecha !== today) return;
-    setValues(prev => {
-      let changed = false;
-      const next = { ...prev };
-      Object.entries(anteriores.porDisp).forEach(([id, f]) => {
-        if (next[id] && next[id].value === '') { next[id] = { ...next[id], value: String(f.valor) }; changed = true; }
-      });
-      return changed ? next : prev;
-    });
-  }, [anteriores, today]);
 
   /** Inicial digitada que no coincide con la final anterior (requiere motivo). */
   const rompe = (id: string) => {

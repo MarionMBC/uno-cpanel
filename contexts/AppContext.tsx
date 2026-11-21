@@ -45,6 +45,9 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | null>(null);
 
+// Datos a escribir de una lectura: sin `id` (va en la ruta) ni campos undefined (Firestore los rechaza).
+const datosLectura = (r: DailyReading) => Object.fromEntries(Object.entries(r).filter(([k, v]) => k !== 'id' && v !== undefined));
+
 // Precio por litro de respaldo mientras carga el historial (mismos valores que la semilla).
 const DEFAULT_PRICES = Object.fromEntries(FUELS.map(f => [f.id, f.price])) as { super: number; regular: number; diesel: number };
 
@@ -255,9 +258,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const batch = writeBatch(db);
     newReadings.forEach(reading => {
       const docRef = doc(db, 'readings', reading.id || idLectura(reading.date, reading.dispenserId));
-      const { id: _id, ...data } = reading;
-      const cleanData = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-      batch.set(docRef, cleanData, { merge: true });
+      batch.set(docRef, datosLectura(reading), { merge: true });
     });
     await batch.commit();
   }, []);
@@ -271,8 +272,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const existentes: string[] = [];
       newReadings.forEach((r, i) => {
         if (snaps[i].exists()) { existentes.push(r.dispenserId); return; }
-        const { id: _id, ...data } = r;
-        tx.set(refs[i], Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined)));
+        tx.set(refs[i], datosLectura(r));
         creadas.push(r.dispenserId);
       });
       return { creadas, existentes };

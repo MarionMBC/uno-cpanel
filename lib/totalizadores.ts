@@ -251,10 +251,12 @@ export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: Pr
   const grupos: GrupoBomba[] = [...gruposMap.values()]
     .filter(g => g.filas.length > 0 || !opts.historico)
     .sort((a, b) => a.pumpNumber - b.pumpNumber || a.pumpId.localeCompare(b.pumpId))
-    .map(({ pumpNumber: _n, ...g }) => {
+    .map(g => {
       g.filas.sort((a, b) => a.cara - b.cara || a.manguera - b.manguera);
       return {
-        ...g,
+        pumpId: g.pumpId,
+        pumpName: g.pumpName,
+        filas: g.filas,
         litros: round(g.filas.reduce((s, f) => s + f.litros, 0), 3),
         total: round(g.filas.reduce((s, f) => s + f.total, 0), 2),
       };
