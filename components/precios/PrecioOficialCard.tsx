@@ -29,14 +29,29 @@ const MEDIOS = [
 const SEN_MEDIA = 'https://sen.hn/wp-json/wp/v2/media?search=Precios&orderby=date&order=desc&per_page=1&_fields=date,source_url';
 const SEN_HISTORICO = 'https://sen.hn/historico-de-precios-de-los-combustibles';
 const DIAS_VALIDEZ = 10;
+const TIMEOUT_MS = 10000;
+/** Diferencial razonable de flete/margen sobre Tegucigalpa, en L/litro. */
+const DIF_MIN = -5;
+const DIF_MAX = 5;
+/** Variación contra el precio vigente que exige revisar antes de usar. */
+const SALTO_ALERTA = 0.15;
+
+const httpsOnly = (u: string) => (/^https:\/\//i.test(u) ? u : undefined);
+
+async function fetchConTimeout(url: string): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try { return await fetch(url, { signal: ctrl.signal }); } finally { clearTimeout(t); }
+}
 
 interface Lectura { medio: string; link: string; fecha: string; precios: PreciosNota }
 interface Resultado { lecturas: Lectura[]; coinciden: boolean | null; sen: { date: string; source_url: string } | null }
 
+/** null = el medio respondió pero no hay nota útil; lanza error si no se pudo consultar. */
 async function leerMedio(m: (typeof MEDIOS)[number]): Promise<Lectura | null> {
   const url = `${m.api}?search=${encodeURIComponent('precios combustibles')}&per_page=10&_fields=date,link,title,content`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
+  const res = await fetchConTimeout(url);
+  if (!res.ok) throw new Error(`${m.nombre}: HTTP ${res.status}`);
   const posts: { date: string; link: string; title: { rendered: string }; content: { rendered: string } }[] = await res.json();
   const limite = Date.now() - DIAS_VALIDEZ * 86400000;
   for (const p of posts) {
@@ -47,13 +62,14 @@ async function leerMedio(m: (typeof MEDIOS)[number]): Promise<Lectura | null> {
   return null;
 }
 
-export default function PrecioOficialCard({ onUsar, puedeEditar }: { onUsar: (porLitro: Record<Clave, string>) => void; puedeEditar: boolean }) {
+export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { onUsar: (porLitro: Record<Clave, string>) => void; puedeEditar: boolean; vigentes: Record<Clave, number> }) {
   const toast = useToast();
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
   const [res, setRes] = useState<Resultado | null>(null);
   const [dif, setDif] = useState<Record<Clave, string>>({ super: '0', regular: '0', diesel: '0' });
   const [difGuardado, setDifGuardado] = useState<Record<Clave, string> | null>(null);
+  const [verificado, setVerificado] = useState(false);
 
   useEffect(() => {
     getDoc(doc(db, 'settings', 'precios'))
@@ -71,16 +87,20 @@ export default function PrecioOficialCard({ onUsar, puedeEditar }: { onUsar: (po
   const consultar = async () => {
     setCargando(true);
     setError('');
+    setVerificado(false);
     try {
+      let fallosRed = 0;
       const [lecturas, sen] = await Promise.all([
-        Promise.all(MEDIOS.map(m => leerMedio(m).catch(() => null))),
-        fetch(SEN_MEDIA).then(r => (r.ok ? r.json() : [])).then((a: { date: string; source_url: string }[]) => a[0] ?? null).catch(() => null),
+        Promise.all(MEDIOS.map(m => leerMedio(m).catch(() => { fallosRed += 1; return null; }))),
+        fetchConTimeout(SEN_MEDIA).then(r => (r.ok ? r.json() : [])).then((a: { date: string; source_url: string }[]) => a[0] ?? null).catch(() => null),
       ]);
       const ok = lecturas.filter((l): l is Lectura => l !== null)
         .sort((a, b) => (b.precios.vigencia || b.fecha).localeCompare(a.precios.vigencia || a.fecha));
       if (ok.length === 0) {
         setRes(null);
-        setError('No se encontró una nota reciente con los precios. Consulte la publicación oficial de la SEN.');
+        setError(fallosRed === MEDIOS.length
+          ? 'No fue posible conectar con las fuentes (sin conexión o bloqueo). Consulte la publicación oficial de la SEN.'
+          : 'No se encontró una nota reciente con los precios de esta semana. Consulte la publicación oficial de la SEN.');
         return;
       }
       // Solo se comparan notas de la misma semana de vigencia.
@@ -95,13 +115,28 @@ export default function PrecioOficialCard({ onUsar, puedeEditar }: { onUsar: (po
   };
 
   const base = res?.lecturas[0]?.precios;
+  const difValido = (p: Clave) => { const n = parseFloat(dif[p] || '0'); return Number.isFinite(n) && n >= DIF_MIN && n <= DIF_MAX; };
   const sugerido = (p: Clave) => {
     const g = base?.porGalon[p];
-    return g == null ? null : Math.round((porLitro(g) + (parseFloat(dif[p]) || 0)) * 100) / 100;
+    if (g == null || !difValido(p)) return null;
+    const v = Math.round((porLitro(g) + (parseFloat(dif[p]) || 0)) * 100) / 100;
+    return v > 0 ? v : null;
   };
+  const salto = (p: Clave) => {
+    const v = sugerido(p);
+    const a = vigentes[p];
+    return v != null && a > 0 ? (v - a) / a : null;
+  };
+  const todosValidos = PRODUCTOS.every(p => sugerido(p.id) != null);
+  const hayDudas = res?.coinciden !== true || PRODUCTOS.some(p => Math.abs(salto(p.id) ?? 0) > SALTO_ALERTA);
+  const puedeUsar = puedeEditar && todosValidos && (!hayDudas || verificado);
   const difCambiado = JSON.stringify(dif) !== JSON.stringify(difGuardado ?? { super: '0', regular: '0', diesel: '0' });
 
   const guardarDif = async () => {
+    if (!PRODUCTOS.every(p => difValido(p.id))) {
+      toast.error('Diferencial fuera de rango', `Use valores entre ${DIF_MIN} y +${DIF_MAX} L por litro.`);
+      return;
+    }
     try {
       await setDoc(doc(db, 'settings', 'precios'), {
         diferencialPorLitro: Object.fromEntries(PRODUCTOS.map(p => [p.id, parseFloat(dif[p.id]) || 0])),
@@ -152,10 +187,10 @@ export default function PrecioOficialCard({ onUsar, puedeEditar }: { onUsar: (po
               {res.coinciden === false && <Badge tone="danger" icon="alert">Las fuentes no coinciden: verifique en sen.hn</Badge>}
               {res.coinciden === null && <Badge tone="warning" icon="alert">Una sola fuente: verifique en sen.hn</Badge>}
               <span>Fuente: {res.lecturas.map((l, i) => (
-                <a key={l.link} href={l.link} target="_blank" rel="noopener noreferrer" style={{ color: '#1d4ed8' }}>{i > 0 ? ', ' : ''}{l.medio}</a>
+                <a key={l.link} href={httpsOnly(l.link)} target="_blank" rel="noopener noreferrer" style={{ color: '#1d4ed8' }}>{i > 0 ? ', ' : ''}{l.medio}</a>
               ))}</span>
               {res.sen && (
-                <a href={res.sen.source_url} target="_blank" rel="noopener noreferrer" style={{ color: '#1d4ed8' }}>
+                <a href={httpsOnly(res.sen.source_url)} target="_blank" rel="noopener noreferrer" style={{ color: '#1d4ed8' }}>
                   Imagen oficial SEN ({res.sen.date.slice(0, 10).split('-').reverse().join('/')})
                 </a>
               )}
@@ -187,12 +222,18 @@ export default function PrecioOficialCard({ onUsar, puedeEditar }: { onUsar: (po
                               onChange={v => { if (/^-?\d*\.?\d{0,2}$/.test(v)) setDif(d => ({ ...d, [p.id]: v })); }}
                               prefix="+"
                               disabled={!puedeEditar}
+                              error={difValido(p.id) ? undefined : `${DIF_MIN} a +${DIF_MAX}`}
                               inputStyle={{ minWidth: 0, width: '100%', textAlign: 'right' }}
                             />
                           </div>
                         </td>
                         <td style={{ padding: '8px 12px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 800, color: '#0f172a' }}>
                           {sugerido(p.id) != null ? `L. ${fmtNum(sugerido(p.id) as number, 2)}` : '—'}
+                          {salto(p.id) != null && (
+                            <div style={{ fontSize: 11, fontWeight: 600, color: Math.abs(salto(p.id) as number) > SALTO_ALERTA ? '#dc2626' : '#64748b' }}>
+                              {(salto(p.id) as number) >= 0 ? '+' : ''}{fmtNum((salto(p.id) as number) * 100, 1)} % vs vigente
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -205,9 +246,15 @@ export default function PrecioOficialCard({ onUsar, puedeEditar }: { onUsar: (po
               <div style={{ fontSize: 12, color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Icon name="info" size={12}/> El diferencial es el flete/margen de la estación sobre el precio de Tegucigalpa (configurable).
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {hayDudas && (
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: '#92400e', fontWeight: 600 }}>
+                    <input type="checkbox" checked={verificado} onChange={e => setVerificado(e.target.checked)} disabled={!puedeEditar}/>
+                    Verifiqué estos precios en la imagen oficial de la SEN
+                  </label>
+                )}
                 <Button variant="ghost" onClick={guardarDif} disabled={!puedeEditar || !difCambiado}>Guardar diferencial</Button>
-                <Button variant="accent" icon="arrow-down" onClick={usar} disabled={!puedeEditar}>Usar estos precios</Button>
+                <Button variant="accent" icon="arrow-down" onClick={usar} disabled={!puedeUsar}>Usar estos precios</Button>
               </div>
             </div>
           </>

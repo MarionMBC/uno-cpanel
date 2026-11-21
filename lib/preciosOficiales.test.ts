@@ -40,3 +40,31 @@ test('centavos de un dígito: "con 5 centavos" = 0.05', () => {
   assert.equal(p.porGalon.regular, 120.4);
   assert.equal(p.porGalon.diesel, 150);
 });
+
+const T = (cuerpo: string) => extraerPrecios(`<p>A partir del lunes 23 de noviembre. ${cuerpo}</p>`, 2026).porGalon;
+
+test('review r1: "pasa de X a Y", "antes", variaciones y rango', () => {
+  assert.deepEqual(T('En Tegucigalpa la súper pasa de L142.91 a L137.43, la regular de L128.05 a L122.81 y el diésel de L153.53 hasta L152.70.'),
+    { super: 137.43, regular: 122.81, diesel: 152.7, kerosene: null });
+  assert.equal(T('En Tegucigalpa la súper, que antes costaba L142.91, ahora queda en L137.43.').super, 137.43);
+  assert.equal(T('En Tegucigalpa la súper subió L85.00 y quedará en L137.43.').super, 137.43);
+  assert.equal(T('En Tegucigalpa el GLP vehicular costará L63.08 y la súper sube L65.00.').super, null);
+});
+
+test('review r1: tabla con San Pedro Sula antes que Tegucigalpa se lee por columna', () => {
+  const html = `<p>Vigentes desde el 23 de noviembre de 2026.</p><table>
+    <tr><th>Producto</th><th>San Pedro Sula</th><th>Tegucigalpa</th></tr>
+    <tr><td>Súper</td><td>L132.24</td><td>L137.43</td></tr>
+    <tr><td>Regular</td><td>L117.63</td><td>L122.81</td></tr>
+    <tr><td>Diésel</td><td>L147.44</td><td>L152.70</td></tr></table>`;
+  const p = extraerPrecios(html, 2026);
+  assert.deepEqual(p.porGalon, { super: 137.43, regular: 122.81, diesel: 152.7, kerosene: null });
+  assert.equal(p.vigencia, '2026-11-23');
+  const sinTgu = extraerPrecios('<table><tr><th>Producto</th><th>SPS</th></tr><tr><td>Súper</td><td>132.24</td></tr></table>', 2026);
+  assert.equal(notaCompleta(sinTgu), false);
+});
+
+test('review r1: vigencia ignora la fecha de publicación', () => {
+  const p = extraerPrecios('<p>Publicado el 20 de noviembre. Los precios rigen desde el 23 de noviembre.</p>', 2026);
+  assert.equal(p.vigencia, '2026-11-23');
+});

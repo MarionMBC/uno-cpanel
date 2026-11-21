@@ -62,6 +62,7 @@ export default function PreciosScreen() {
       <PrecioOficialCard
         puedeEditar={roles.find(r => r.id === appUser?.roleId)?.permissions?.canEditPrices === true}
         onUsar={v => setDraft(v)}
+        vigentes={currentPrices}
       />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
         {FUELS.map((f) => {
