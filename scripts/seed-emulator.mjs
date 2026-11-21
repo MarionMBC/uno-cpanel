@@ -15,6 +15,7 @@ const EXTRA_USERS = [
   { email: 'operador@uno.local', password: 'uno12345', name: 'Operador Uno', roleId: 'operador', status: 'activo' },
   { email: 'operador2@uno.local', password: 'uno12345', name: 'Operador Dos', roleId: 'operador', status: 'activo' },
   { email: 'inactivo@uno.local', password: 'uno12345', name: 'Usuario Inactivo', roleId: 'operador', status: 'inactivo' },
+  { email: 'consulta@uno.local', password: 'uno12345', name: 'Solo Consulta', roleId: 'consulta', status: 'activo' },
 ];
 
 function toValue(v) {
@@ -35,16 +36,27 @@ async function setDoc(path, data) {
   if (!res.ok) throw new Error(`setDoc ${path}: ${res.status} ${await res.text()}`);
 }
 
+const ID = `${AUTH}/identitytoolkit.googleapis.com/v1`;
 async function ensureAuthUser({ email, password, name }) {
-  const res = await fetch(`${AUTH}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=demo-api-key`, {
+  let res = await fetch(`${ID}/accounts:signUp?key=demo-api-key`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, displayName: name, returnSecureToken: false }),
+    body: JSON.stringify({ email, password, displayName: name, returnSecureToken: true }),
   });
   if (!res.ok) {
     const txt = await res.text();
     if (!txt.includes('EMAIL_EXISTS')) throw new Error(`signUp ${email}: ${res.status} ${txt}`);
+    res = await fetch(`${ID}/accounts:signInWithPassword?key=demo-api-key`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, returnSecureToken: true }),
+    });
   }
+  const { localId } = await res.json();
+  // Las reglas exigen correo verificado: en el emulador se marca verificado (Bearer owner = admin).
+  await fetch(`${ID}/projects/${PROJECT}/accounts:update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+    body: JSON.stringify({ localId, emailVerified: true }),
+  });
 }
 
 const FUELS = {
@@ -114,6 +126,10 @@ async function main() {
   await setDoc('roles/admin', {
     id: 'admin', name: 'Administrador',
     permissions: { canManageUsers: true, canManagePumps: true, canCloseDay: true, canEditPrices: true, canViewAudit: true, canManageInventory: true },
+  });
+  await setDoc('roles/consulta', {
+    id: 'consulta', name: 'Consulta',
+    permissions: { canManageUsers: false, canManagePumps: false, canCloseDay: false, canEditPrices: false, canViewAudit: false, canManageInventory: false },
   });
   await setDoc('roles/operador', {
     id: 'operador', name: 'Operador',

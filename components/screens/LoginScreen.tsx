@@ -19,7 +19,12 @@ export default function LoginScreen() {
     try {
       await signInWithGoogle();
     } catch (e: unknown) {
-      setError(authError || (e instanceof Error ? e.message : '') || 'Error al iniciar sesión con Google');
+      const m = e instanceof Error ? e.message : '';
+      setError(
+        m === 'Cuenta inactiva' ? 'Tu cuenta ha sido desactivada. Contacta al administrador.'
+        : m === 'Acceso denegado' ? 'Tu cuenta no tiene acceso a este sistema. Contacta al administrador.'
+        : authError || 'Error al iniciar sesión con Google'
+      );
     } finally {
       setLoading(false);
     }
@@ -36,6 +41,7 @@ export default function LoginScreen() {
       setError(
         m === 'Cuenta inactiva' ? 'Tu cuenta ha sido desactivada. Contacta al administrador.'
         : m === 'Acceso denegado' ? 'Tu cuenta no tiene acceso a este sistema. Contacta al administrador.'
+        : m === 'Correo sin verificar' ? 'Te enviamos un correo para verificar tu cuenta. Ábrelo y vuelve a iniciar sesión.'
         : 'Correo o contraseña incorrectos'
       );
     } finally {

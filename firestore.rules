@@ -13,7 +13,10 @@ service cloud.firestore {
       return signedIn() && email() == 'melchisedec.bustamante@gmail.com' && request.auth.token.email_verified == true;
     }
     function ficha() { return get(/databases/$(database)/documents/users/$(email())).data; }
-    function tieneFicha() { return signedIn() && exists(/databases/$(database)/documents/users/$(email())); }
+    // Correo verificado obligatorio: sin esto, cualquiera podría registrarse con contraseña usando el correo
+    // de una ficha que aún no inició sesión y heredar su rol.
+    function verificado() { return signedIn() && request.auth.token.email_verified == true; }
+    function tieneFicha() { return verificado() && exists(/databases/$(database)/documents/users/$(email())); }
     function activo() { return isSuperAdmin() || (tieneFicha() && ficha().status == 'activo'); }
     function permiso(p) {
       return isSuperAdmin() || (
@@ -25,7 +28,7 @@ service cloud.firestore {
 
     // Fichas de usuario: cada quien lee la suya (para validar el acceso al iniciar sesión).
     match /users/{userEmail} {
-      allow read: if signedIn() && (email() == userEmail || activo());
+      allow read: if signedIn() && (email() == userEmail || permiso('canManageUsers'));
       allow create, update: if permiso('canManageUsers');
       allow delete: if false;
     }
@@ -52,23 +55,41 @@ service cloud.firestore {
       allow write: if permiso('canEditPrices');
     }
 
-    // Lecturas de totalizadores: cualquier usuario activo registra; no se borran.
-    match /readings/{readingId} {
-      allow read: if activo();
-      allow create, update: if activo()
+    function diaCerrado(fecha) {
+      return exists(/databases/$(database)/documents/dayStatus/$(fecha))
+        && get(/databases/$(database)/documents/dayStatus/$(fecha)).data.get('status', '') == 'cerrado';
+    }
+    function lecturaValida() {
+      return request.resource.data.date is string
         && request.resource.data.initialReading is number
         && (!('finalReading' in request.resource.data) || request.resource.data.finalReading is number);
+    }
+
+    // Lecturas de totalizadores: cualquier usuario activo registra mientras el día esté abierto;
+    // con el día cerrado solo corrige quien puede cerrar el día. No se borran.
+    match /readings/{readingId} {
+      allow read: if activo();
+      allow create: if activo() && lecturaValida()
+        && (!diaCerrado(request.resource.data.date) || permiso('canCloseDay'));
+      allow update: if activo() && lecturaValida()
+        && request.resource.data.date == resource.data.date
+        && (!diaCerrado(resource.data.date) || permiso('canCloseDay'));
       allow delete: if false;
     }
 
-    // Día operativo (tanques, pipas, fondo, horómetro, estado). Cerrar/reabrir exige canCloseDay.
+    // Día operativo (tanques, pipas, fondo, horómetro, estado).
+    // Cambiar el estado (cerrar, reabrir o borrar el campo) exige canCloseDay; con el día cerrado,
+    // cualquier cambio exige canCloseDay.
     match /dayStatus/{date} {
       allow read: if activo();
-      allow create, update: if activo() && (
-        !('status' in request.resource.data)
-        || (resource != null && request.resource.data.status == resource.data.status)
-        || (resource == null && request.resource.data.status in ['en_proceso', 'pendiente'])
+      allow create: if activo() && (
+        request.resource.data.get('status', 'en_proceso') in ['en_proceso', 'pendiente']
         || permiso('canCloseDay')
+      );
+      allow update: if activo() && (
+        permiso('canCloseDay')
+        || (request.resource.data.get('status', null) == resource.data.get('status', null)
+            && resource.data.get('status', '') != 'cerrado')
       );
       allow delete: if false;
     }
@@ -76,7 +97,8 @@ service cloud.firestore {
     // Auditoría: se agrega, nunca se edita ni se borra.
     match /auditLog/{entryId} {
       allow read: if permiso('canViewAudit');
-      allow create: if activo();
+      // Quien registra es quien inicia sesión (no se puede firmar a nombre de otro uid).
+      allow create: if activo() && request.resource.data.userId == request.auth.uid;
       allow update, delete: if false;
     }
 

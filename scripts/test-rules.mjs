@@ -17,8 +17,10 @@ async function token(email, password = 'uno12345') {
   }
   const j = await r.json();
   if (!j.idToken) throw new Error(`sin token para ${email}: ${JSON.stringify(j)}`);
+  uids[email] = j.localId;
   return j.idToken;
 }
+const uids = {};
 
 const val = v => (typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v } : { booleanValue: v });
 const body = obj => JSON.stringify({ fields: Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, val(v)])) });
@@ -64,7 +66,7 @@ caso('operador edita precios', await op(operador, 'PATCH', 'prices/op_test', { s
 caso('operador edita bombas', await op(operador, 'PATCH', 'pumps/p1', { name: 'X' }), false);
 caso('operador crea usuario', await op(operador, 'PATCH', 'users/nuevo@uno.local', { email: 'nuevo@uno.local' }), false);
 caso('operador lee auditoría', await op(operador, 'GET', 'auditLog/x'), false);
-caso('operador agrega auditoría', await op(operador, 'PATCH', `auditLog/op_entry_${run}`, { action: 'x' }), true);
+caso('operador agrega auditoría', await op(operador, 'PATCH', `auditLog/op_entry_${run}`, { action: 'x', userId: uids['operador@uno.local'] }), true);
 // CA4: admin
 caso('admin crea precio', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 37.5 }), true);
 caso('admin modifica precio existente', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 40 }), false);
@@ -74,6 +76,33 @@ caso('admin lee auditoría', await op(admin, 'GET', `auditLog/op_entry_${run}`),
 caso('admin edita auditoría', await op(admin, 'PATCH', `auditLog/op_entry_${run}`, { action: 'y' }), false);
 caso('admin borra auditoría', await op(admin, 'DELETE', `auditLog/op_entry_${run}`), false);
 caso('colección desconocida', await op(admin, 'GET', 'secretos/x'), false);
+
+// Review r1 de TASK-006
+const consulta = await token('consulta@uno.local');
+caso('operador lee ficha ajena', await op(operador, 'GET', 'users/admin@uno.local'), false);
+// Robo de ficha: el admin crea la ficha de alguien que aún no entró; un tercero se registra con ese correo sin verificar.
+const robo = `robo${run}@uno.local`;
+caso('admin crea ficha nueva', await op(admin, 'PATCH', `users/${robo}`, { email: robo, roleId: 'admin', status: 'activo' }), true);
+const intruso = await token(robo);
+caso('registrado sin verificar con correo de ficha admin lee auditoría', await op(intruso, 'GET', `auditLog/op_entry_${run}`), false);
+caso('registrado sin verificar crea rol', await op(intruso, 'PATCH', `roles/hack${run}`, { name: 'x' }), false);
+// Estado del día
+const dia = `2099-01-${String(run % 28 + 1).padStart(2, '0')}`;
+caso('operador crea día en proceso', await op(operador, 'PATCH', `dayStatus/${dia}`, { status: 'en_proceso' }), true);
+caso('consulta (sin canCloseDay) cierra el día', await op(consulta, 'PATCH', `dayStatus/${dia}`, { status: 'cerrado' }), false);
+caso('admin cierra el día', await op(admin, 'PATCH', `dayStatus/${dia}`, { status: 'cerrado' }), true);
+{ // borrar el campo status = reabrir
+  const r = await fetch(`${FS}/dayStatus/${dia}?updateMask.fieldPaths=status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${consulta}` }, body: JSON.stringify({ fields: {} }) });
+  caso('consulta borra status de día cerrado (reabrir)', r.status, false);
+}
+caso('consulta edita fondo en día cerrado', await op(consulta, 'PATCH', `dayStatus/${dia}`, { cashFund: 1 }), false);
+caso('admin edita fondo en día cerrado', await op(admin, 'PATCH', `dayStatus/${dia}`, { cashFund: 2 }), true);
+caso('consulta crea lectura en día cerrado', await op(consulta, 'PATCH', `readings/${dia}_p1-A-1`, { date: dia, initialReading: 1 }), false);
+caso('admin corrige lectura en día cerrado', await op(admin, 'PATCH', `readings/${dia}_p1-A-1`, { date: dia, initialReading: 1, finalReading: 5 }), true);
+caso('consulta modifica lectura de día cerrado', await op(consulta, 'PATCH', `readings/${dia}_p1-A-1`, { date: dia, initialReading: 1, finalReading: 999999 }), false);
+// Auditoría a nombre de otro
+caso('operador firma auditoría con uid ajeno', await op(operador, 'PATCH', `auditLog/falsa_${run}`, { userId: uids['admin@uno.local'], action: 'Cierre del día' }), false);
+caso('operador firma auditoría con su uid', await op(operador, 'PATCH', `auditLog/propia_${run}`, { userId: uids['operador@uno.local'], action: 'Lectura' }), true);
 
 console.log(fallos ? `\n${fallos} caso(s) fallaron` : '\nTodas las reglas se comportan como se espera');
 process.exit(fallos ? 1 : 0);

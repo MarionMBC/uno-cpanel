@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import { User, onAuthStateChanged, signInWithPopup, signOut, sendEmailVerification } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, googleProvider, db } from '@/lib/firebase';
 import { AppUser } from '@/types';
@@ -82,6 +82,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAuthError('Tu cuenta no tiene acceso a este sistema. Contacta al administrador.');
       throw new Error('Acceso denegado');
     }
+    if (userDoc.exists() && (userDoc.data() as AppUser).status === 'inactivo') {
+      await signOut(auth);
+      setAuthError('Tu cuenta ha sido desactivada. Contacta al administrador.');
+      throw new Error('Cuenta inactiva');
+    }
   };
 
   const signInWithEmail = async (email: string, password: string) => {
@@ -90,6 +95,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { signInWithEmailAndPassword } = await import('firebase/auth');
     const cred = await signInWithEmailAndPassword(auth, email, password);
     const correo = cred.user.email || email;
+    // Correo no verificado: las reglas lo rechazan. Se envía la verificación y se cierra la sesión.
+    if (!cred.user.emailVerified) {
+      try { await sendEmailVerification(cred.user); } catch { /* límite de envíos: se informa igual */ }
+      await signOut(auth);
+      setAuthError('Te enviamos un correo para verificar tu cuenta. Ábrelo y vuelve a iniciar sesión.');
+      throw new Error('Correo sin verificar');
+    }
     const userDoc = await getDoc(doc(db, 'users', correo));
     if (!userDoc.exists() && correo !== SUPER_ADMIN_EMAIL) {
       await signOut(auth);
