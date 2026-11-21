@@ -10,6 +10,7 @@ import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
+import PrecioOficialCard from '@/components/precios/PrecioOficialCard';
 import { FUELS, LITERS_PER_GALLON } from '@/lib/constants';
 
 export default function PreciosScreen() {
@@ -58,6 +59,10 @@ export default function PreciosScreen() {
 
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <PrecioOficialCard
+        puedeEditar={roles.find(r => r.id === appUser?.roleId)?.permissions?.canEditPrices === true}
+        onUsar={v => setDraft(v)}
+      />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
         {FUELS.map((f) => {
           const draftKey = f.id as 'super' | 'regular' | 'diesel';
