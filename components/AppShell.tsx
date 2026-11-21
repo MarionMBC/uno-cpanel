@@ -17,10 +17,11 @@ import PreciosScreen from './screens/PreciosScreen';
 import BombasScreen from './screens/BombasScreen';
 import AuditoriaScreen from './screens/AuditoriaScreen';
 import ControlCombustibleScreen from './screens/ControlCombustibleScreen';
+import TotalizadoresScreen from './screens/TotalizadoresScreen';
 
 import UsuariosScreen from './screens/UsuariosScreen';
 
-type Route = 'dashboard' | 'lectura-inicial' | 'lectura-final' | 'control-combustible' | 'reporte-diario' | 'reporte-mensual' | 'precios' | 'bombas' | 'auditoria' | 'usuarios';
+type Route = 'dashboard' | 'lectura-inicial' | 'lectura-final' | 'totalizadores' | 'control-combustible' | 'reporte-diario' | 'reporte-mensual' | 'precios' | 'bombas' | 'auditoria' | 'usuarios';
 
 export default function AppShell() {
   const { user, loading: authLoading } = useAuth();
@@ -56,6 +57,7 @@ export default function AppShell() {
     'dashboard': <DashboardScreen setRoute={r => setRoute(r as Route)}/>,
     'lectura-inicial': <LecturaInicialScreen />,
     'lectura-final': <LecturaFinalScreen />,
+    'totalizadores': <TotalizadoresScreen />,
     'control-combustible': <ControlCombustibleScreen />,
     'reporte-diario': <ReporteDiarioScreen />,
     'reporte-mensual': <ReporteMensualScreen />,

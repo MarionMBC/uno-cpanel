@@ -2,7 +2,7 @@
 // Uso: `npm run emulators` en otra terminal, luego `npm run seed:emu`.
 // Datos: estación con 2 bombas × 2 caras × 3 mangueras (Diésel, Súper, Regular),
 // lecturas iniciales del cuadro de totalizadores del 27/04/2026 y precios por litro
-// 34.05 / 37.76 / 37.06 (la app guarda precio por galón).
+// 34.05 / 37.76 / 37.06 (la app guarda y calcula precio por litro).
 
 const PROJECT = 'demo-uno-panel';
 const FS = `http://127.0.0.1:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
@@ -78,7 +78,7 @@ function buildPumps() {
       id: pumpId,
       name: pumpName,
       isActive: true,
-      fuel: { id: 'diesel', name: 'Diésel', color: '#f59e0b', price: +(FUELS.diesel.pricePerLiter * LITERS_PER_GALLON).toFixed(4) },
+      fuel: { id: 'diesel', name: 'Diésel', color: '#f59e0b', price: FUELS.diesel.pricePerLiter },
       faces: ['A', 'B'].map((face, fi) => ({
         id: face,
         dispensers: HOSE_FUEL.map((fid, hi) => ({
@@ -100,7 +100,7 @@ function buildPumps() {
 
 async function main() {
   const today = new Date().toISOString().split('T')[0]; // misma convención que AppContext
-  const pricePerGallon = Object.fromEntries(Object.values(FUELS).map(f => [f.id, f.pricePerLiter * LITERS_PER_GALLON]));
+  const pricePerLiter = Object.fromEntries(Object.values(FUELS).map(f => [f.id, f.pricePerLiter]));
 
   await ensureAuthUser(SEED_USER);
   await setDoc(`users/${SEED_USER.email}`, { email: SEED_USER.email, name: SEED_USER.name, roleId: 'admin', status: 'activo' });
@@ -121,7 +121,7 @@ async function main() {
 
   await setDoc('prices/seed_local', {
     date: today.split('-').reverse().join('/'),
-    ...pricePerGallon,
+    ...pricePerLiter,
     registeredBy: 'Semilla local',
     timestamp: Date.now(),
   });
@@ -143,7 +143,7 @@ async function main() {
       pumpName: `Bomba 0${b}`,
       fuelId: fid,
       fuelName: FUELS[fid].name,
-      fuelPrice: pricePerGallon[fid],
+      fuelPrice: pricePerLiter[fid],
       initialReading: initial,
       status: 'activo',
       createdBy: SEED_USER.name,
@@ -155,7 +155,7 @@ async function main() {
         finalReading: +(initial + sold).toFixed(3),
         liters: sold,
         gallons,
-        total: gallons * pricePerGallon[fid],
+        total: +(sold * pricePerLiter[fid]).toFixed(2),
       });
     }
     await setDoc(`readings/${today}_${pumpId}-${face}-${h}`, reading);

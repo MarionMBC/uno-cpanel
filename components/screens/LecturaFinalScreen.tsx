@@ -15,6 +15,7 @@ import { fmtL, fmtNum } from '@/lib/utils';
 import { LITERS_PER_GALLON } from '@/lib/constants';
 import { DailyReading } from '@/types';
 import * as XLSX from 'xlsx';
+import { round } from '@/lib/totalizadores';
 
 export default function LecturaFinalScreen() {
   const { pumps, dayStatus, setDayStatus, dayData, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles } = useApp();
@@ -54,7 +55,7 @@ export default function LecturaFinalScreen() {
     const fVal = parseFloat(finals[id]) || 0;
     const liters = Math.max(0, fVal - iVal);
     const gallons = liters / LITERS_PER_GALLON;
-    const lemp = gallons * getPrice(fuelId);
+    const lemp = round(liters * getPrice(fuelId), 2); // precio por litro, mismo cálculo que el Cuadro de totalizadores
     return { liters, gallons, lemp, initVal: iVal, price: getPrice(fuelId) };
   };
 

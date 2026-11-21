@@ -11,6 +11,7 @@ const TITLES: Record<string, string> = {
   'dashboard': 'Dashboard',
   'lectura-inicial': 'Registro de lectura inicial',
   'lectura-final': 'Registro de lectura final',
+  'totalizadores': 'Cuadro de totalizadores',
   'control-combustible': 'Control inventario',
   'reporte-diario': 'Reporte diario',
   'reporte-mensual': 'Reporte mensual',
