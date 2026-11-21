@@ -4,7 +4,7 @@ module.exports = {
     node: true,
   },
   parserOptions: {
-    "ecmaVersion": 2018,
+    "ecmaVersion": 2022,
   },
   extends: [
     "eslint:recommended",
@@ -22,6 +22,11 @@ module.exports = {
         mocha: true,
       },
       rules: {},
+    },
+    {
+      // Pruebas: cadenas de fixtures largas y helpers sin JSDoc.
+      files: ["test/**"],
+      rules: {"max-len": "off", "require-jsdoc": "off"},
     },
   ],
   globals: {},

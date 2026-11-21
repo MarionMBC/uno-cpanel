@@ -14,6 +14,7 @@ import { DEFAULT_DIFERENCIAL_POR_LITRO } from '@/lib/constants';
 import {
   extraerPrecios, notaCompleta, diferencias, porLitro, esNotaDePrecios, PreciosNota,
 } from '@/lib/preciosOficiales';
+import SugerenciaSemanal, { SugerenciaOficial } from './SugerenciaSemanal';
 
 type Clave = 'super' | 'regular' | 'diesel';
 const PRODUCTOS: { id: Clave; nombre: string; color: string }[] = [
@@ -116,6 +117,20 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
     }
   };
 
+  // La sugerencia automática entra por el mismo camino que una consulta manual (misma verificación).
+  const usarSugerencia = (s: SugerenciaOficial) => {
+    setError('');
+    setVerificado(false);
+    setRes({
+      lecturas: s.fuentes.map(f => ({
+        medio: f.medio, link: f.url ?? '', fecha: s.vigencia,
+        precios: { porGalon: { ...s.porGalon, kerosene: null }, vigencia: s.vigencia },
+      })),
+      coinciden: s.coinciden,
+      sen: s.senImagen ? { date: s.senImagen.fecha, source_url: s.senImagen.url } : null,
+    });
+  };
+
   const base = res?.lecturas[0]?.precios;
   const difValido = (p: Clave) => { const n = parseFloat(dif[p] || '0'); return Number.isFinite(n) && n >= DIF_MIN && n <= DIF_MAX; };
   const sugerido = (p: Clave) => {
@@ -169,6 +184,7 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
       </div>
 
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <SugerenciaSemanal onUsar={usarSugerencia}/>
         {error && (
           <div role="alert" style={{ padding: '10px 14px', borderRadius: 10, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 13 }}>
             {error} <a href={SEN_HISTORICO} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700 }}>sen.hn</a>
