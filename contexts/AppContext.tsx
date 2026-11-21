@@ -9,8 +9,8 @@ import { db } from '@/lib/firebase';
 import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole } from '@/types';
 import { INITIAL_PUMPS, PRICE_HISTORY, FUELS, DEFAULT_DIFERENCIAL_POR_LITRO } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
+import { diaOperativo } from '@/lib/fecha';
 
-const todayDoc = new Date().toISOString().split('T')[0];
 
 interface AppContextType {
   pumps: Pump[];
@@ -56,6 +56,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Las reglas de Firestore solo permiten leer/escribir con sesión y ficha activa:
   // la siembra y las suscripciones arrancan cuando hay un usuario autorizado.
   const autorizado = !!appUser && appUser.status === 'activo';
+
+  // Día operativo en hora de Honduras; se revisa cada minuto para cambiar de día sin recargar.
+  const [todayDoc, setTodayDoc] = useState(() => diaOperativo());
+  useEffect(() => {
+    const t = setInterval(() => setTodayDoc(d => { const n = diaOperativo(); return n === d ? d : n; }), 60000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!authLoading && !autorizado) setLoading(false);
@@ -202,7 +209,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, sinPermiso('roles'));
 
     return () => { unsubPumps(); unsubPrices(); unsubAudit(); unsubDay(); unsubReadings(); unsubUsers(); unsubRoles(); };
-  }, [autorizado]);
+  }, [autorizado, todayDoc]);
 
   const setPumps = useCallback(async (newPumps: Pump[]) => {
     const batch = writeBatch(db);
@@ -214,11 +221,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setDayStatus = useCallback(async (s: DayStatusValue) => {
     await setDoc(doc(db, 'dayStatus', todayDoc), { status: s }, { merge: true });
-  }, []);
+  }, [todayDoc]);
 
   const updateDayData = useCallback(async (data: Partial<DayStatus>) => {
     await setDoc(doc(db, 'dayStatus', todayDoc), { date: todayDoc, ...data }, { merge: true });
-  }, []);
+  }, [todayDoc]);
 
   const addAuditEntry = useCallback(async (entry: Omit<AuditEntry, 'id'>) => {
     await addDoc(collection(db, 'auditLog'), entry);

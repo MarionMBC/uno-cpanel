@@ -12,6 +12,7 @@ import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
 import { Dispenser, DailyReading, Pump } from '@/types';
+import { diaOperativo } from '@/lib/fecha';
 import { fmtNum } from '@/lib/utils';
 
 interface ReadingValue {
@@ -186,7 +187,7 @@ export default function LecturaInicialScreen() {
   };
 
   const handleConfirm = async () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = diaOperativo(); // mismo día operativo (hora de Honduras) que AppContext
     const newReadings: DailyReading[] = [];
     
     allDisp.forEach(d => {
