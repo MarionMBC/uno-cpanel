@@ -9,7 +9,7 @@
     "lint": "eslint",
     "emulators": "node scripts/emulators.mjs",
     "seed:emu": "node scripts/seed-emulator.mjs",
-    "test": "node --experimental-strip-types --no-warnings --test lib/totalizadores.test.ts"
+    "test": "node --experimental-strip-types --no-warnings --test lib/totalizadores.test.ts lib/calibracion.test.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

@@ -59,6 +59,7 @@ export interface FuelReceipt {
   id: string;
   fuelId: string;
   fuelName: string;
+  /** Galones recibidos. */
   amount: number;
   driver?: string;
   invoice?: string;
@@ -75,9 +76,17 @@ export interface DayStatus {
   horometerFinal?: number;
   tanks?: {
     [fuelId: string]: {
+      /** Legado: varilla en litros (ya no se usa). */
       initialDipstick?: number;
       finalDipstick?: number;
+      /** Galones recibidos en pipas del día. */
       refueledAmount?: number;
+      /** Varilla en pulgadas (tanques con tabla de calibración). */
+      initialInches?: number;
+      finalInches?: number;
+      /** Inventario en galones (de la tabla, o digitado si el tanque no tiene tabla). */
+      initialGallons?: number;
+      finalGallons?: number;
     }
   };
   receipts?: FuelReceipt[];

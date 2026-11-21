@@ -126,7 +126,21 @@ async function main() {
     timestamp: Date.now(),
   });
 
-  await setDoc(`dayStatus/${today}`, { date: today, status: 'en_proceso', cashFund: 1500 });
+  // Tanques: Diésel y Súper por varilla (pulgadas → galones de la tabla de calibración);
+  // Regular sin tabla, en galones. Una pipa de Súper de 1000 gal.
+  await setDoc(`dayStatus/${today}`, {
+    date: today,
+    status: 'en_proceso',
+    cashFund: 1500,
+    tanks: {
+      diesel: { initialInches: 45.5, initialGallons: 3362, finalInches: 40.75, finalGallons: 2947, refueledAmount: 0 },
+      super: { initialInches: 38.25, initialGallons: 2775, finalInches: 46, finalGallons: 3463, refueledAmount: 1000 },
+      regular: { initialGallons: 2800, finalGallons: 2672, refueledAmount: 0 },
+    },
+    receipts: [
+      { id: 'rec-seed-1', fuelId: 'super', fuelName: 'Súper', amount: 1000, invoice: '001-001-01-00017456', plate: 'C 123456', driver: 'Conductor de prueba', timestamp: new Date().toISOString() },
+    ],
+  });
 
   for (const [key, initial] of Object.entries(INITIAL)) {
     const [b, c, h] = key.split('-').map(Number);
