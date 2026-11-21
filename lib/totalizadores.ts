@@ -23,6 +23,10 @@ export interface FilaCuadro {
   precio: number;
   total: number;
   estado: EstadoFila;
+  /** Litros calculados con vuelta a cero del totalizador. */
+  rollover?: boolean;
+  /** La inicial no coincide con la final anterior (con motivo). */
+  continuityBreak?: boolean;
 }
 
 export interface GrupoBomba {
@@ -65,76 +69,198 @@ function numeroDe(texto: string, fallback: number): number {
   return m ? Number(m[1]) : fallback;
 }
 
-export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: PreciosPorLitro): Cuadro {
-  // Si hubiera lecturas duplicadas de una manguera, manda la primera (mismo criterio que Lectura final).
-  const porDispensador = new Map<string, DailyReading>();
-  readings.forEach(r => { if (!porDispensador.has(r.dispenserId)) porDispensador.set(r.dispenserId, r); });
+// ─── Identidad de lecturas (A3) ──────────────────────────────────────────────
+
+/** ID determinista: una lectura por dispensador y día operativo. */
+export const idLectura = (fecha: string, dispenserId: string) => `${fecha}_${dispenserId}`;
+
+/**
+ * Una lectura por dispensador. Manda la de ID determinista; si solo hay lecturas viejas con ID
+ * aleatorio (antes de A3), manda la primera que llegó (mismo criterio que antes en todas las pantallas).
+ */
+export function lecturasPorDispensador<T extends Pick<DailyReading, 'id' | 'date' | 'dispenserId'>>(readings: T[]): Map<string, T> {
+  const m = new Map<string, T>();
+  readings.forEach(r => {
+    const actual = m.get(r.dispenserId);
+    if (!actual) m.set(r.dispenserId, r);
+    else if (actual.id !== idLectura(actual.date, actual.dispenserId) && r.id === idLectura(r.date, r.dispenserId)) m.set(r.dispenserId, r);
+  });
+  return m;
+}
+
+// ─── Cálculo único de venta (A4) y vuelta a cero (A7) ────────────────────────
+
+/** Máximo del totalizador por defecto (6 enteros, 3 decimales). */
+export const METER_MAX_DEFAULT = 999999.999;
+
+/**
+ * Litros entre inicial y final, o null si no cuadran.
+ * - Normal: final − inicial (final ≥ inicial).
+ * - Rollover (el totalizador pasó por cero): final + meterMax − inicial.
+ *   Ej.: inicial 999850, final 120, meterMax 999999.999 → 270 L (aprox.: el valor exacto suma la resolución, 0.001 L).
+ *   Solo es válido si final < inicial (si no, no hubo vuelta).
+ */
+export function litrosEntre(inicial: number, final: number, rollover = false, meterMax = METER_MAX_DEFAULT): number | null {
+  if (rollover) {
+    if (final >= inicial || inicial > meterMax) return null;
+    return round(final + meterMax - inicial, 3);
+  }
+  if (final < inicial) return null;
+  return round(final - inicial, 3);
+}
+
+export type LecturaVenta = Pick<DailyReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax'>;
+
+export interface Venta {
+  estado: 'ok' | 'pendiente' | 'invalida' | 'mantenimiento';
+  litros: number;
+  /** Lempiras por litro: el de la lectura (fijado al abrir) y el vigente solo si falta. */
+  precio: number;
+  /** round(litros × precio, 2). */
+  total: number;
+}
+
+/** Único cálculo de venta de una lectura. Lo usan Lectura final, Dashboard, Cuadro y (luego) Reportes. */
+export function calcVenta(r: LecturaVenta, precios: PreciosPorLitro): Venta {
+  const precio = r.fuelPrice > 0 ? r.fuelPrice : precios[r.fuelId] || 0;
+  if (r.status === 'mantenimiento') return { estado: 'mantenimiento', litros: 0, precio, total: 0 };
+  if (r.finalReading === undefined || r.finalReading === null || Number.isNaN(r.finalReading)) return { estado: 'pendiente', litros: 0, precio, total: 0 };
+  const litros = litrosEntre(r.initialReading, r.finalReading, r.rollover === true, r.meterMax ?? METER_MAX_DEFAULT);
+  if (litros === null) return { estado: 'invalida', litros: 0, precio, total: 0 };
+  return { estado: 'ok', litros, precio, total: round(litros * precio, 2) };
+}
+
+// ─── Continuidad (A8) ─────────────────────────────────────────────────────────
+
+/**
+ * Última lectura final conocida del dispensador en una fecha anterior a `fecha`.
+ * Ignora mantenimiento (su totalizador no es fiable) y lecturas sin final.
+ */
+export function finalAnterior(readings: Pick<DailyReading, 'date' | 'dispenserId' | 'finalReading' | 'status'>[], dispenserId: string, fecha: string): { fecha: string; valor: number } | null {
+  let mejor: { fecha: string; valor: number } | null = null;
+  readings.forEach(r => {
+    if (r.dispenserId !== dispenserId || r.date >= fecha || r.status === 'mantenimiento') return;
+    if (r.finalReading === undefined || r.finalReading === null) return;
+    if (!mejor || r.date > mejor.fecha) mejor = { fecha: r.date, valor: r.finalReading };
+  });
+  return mejor;
+}
+
+/** Hay ruptura de continuidad si se conoce la final anterior y la inicial difiere de ella. */
+export const rompeContinuidad = (inicial: number, anterior: number | null | undefined) =>
+  anterior !== null && anterior !== undefined && round(inicial, 3) !== round(anterior, 3);
+
+// ─── Cuadro ───────────────────────────────────────────────────────────────────
+
+const caraDe = (face: string, fallback: number) => {
+  const t = (face || '').trim().toUpperCase();
+  if (/^[A-Z]$/.test(t)) return t.charCodeAt(0) - 64;
+  return numeroDe(t, fallback);
+};
+
+export interface OpcionesCuadro {
+  /**
+   * Fecha pasada: las filas salen de las lecturas de esa fecha (traen pumpName/face/fuelId),
+   * no de la configuración actual. Una bomba inactiva o borrada hoy no oculta ventas pasadas.
+   */
+  historico?: boolean;
+}
+
+export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: PreciosPorLitro, opts: OpcionesCuadro = {}): Cuadro {
+  const porDispensador = lecturasPorDispensador(readings);
   const productos = new Map<string, ResumenProducto>();
+  const usadas = new Set<string>();
+
+  // Colores y nombres de la configuración actual (solo cosmético en el histórico).
+  const config = new Map<string, { pump: Pump; color: string; fuelName: string }>();
+  pumps.forEach(p => p.faces.forEach(f => f.dispensers.forEach(d => config.set(d.id, { pump: p, color: d.fuelColor, fuelName: d.fuelName }))));
 
   const ordenadas = [...pumps].sort((a, b) => numeroDe(a.name, 0) - numeroDe(b.name, 0) || a.id.localeCompare(b.id));
+  const gruposMap = new Map<string, GrupoBomba & { pumpNumber: number }>();
+  const grupo = (pumpId: string, pumpName: string, pumpNumber: number) => {
+    let g = gruposMap.get(pumpId);
+    if (!g) { g = { pumpId, pumpName, pumpNumber, filas: [], litros: 0, total: 0 }; gruposMap.set(pumpId, g); }
+    return g;
+  };
 
-  const grupos: GrupoBomba[] = ordenadas.map((pump, pi) => {
-    const pumpNumber = numeroDe(pump.name, pi + 1);
-    const filas: FilaCuadro[] = [];
+  const fila = (base: Omit<FilaCuadro, 'litros' | 'precio' | 'total' | 'estado'>, r: DailyReading | undefined, forzarMant: boolean): FilaCuadro => {
+    let estado: EstadoFila;
+    let litros = 0, precio = precios[base.fuelId] || 0, total = 0;
+    if (r) {
+      const v = calcVenta(r, precios);
+      precio = v.precio;
+      estado = forzarMant ? 'mantenimiento' : v.estado;
+      if (estado === 'ok') { litros = v.litros; total = v.total; }
+    } else {
+      estado = forzarMant ? 'mantenimiento' : 'sin_inicial';
+    }
+    const f: FilaCuadro = { ...base, litros, precio, total, estado };
+    if (estado === 'ok') {
+      const p = productos.get(f.fuelId) || { fuelId: f.fuelId, fuelName: f.fuelName, fuelColor: f.fuelColor, litros: 0, total: 0 };
+      p.litros = round(p.litros + litros, 3);
+      p.total = round(p.total + total, 2);
+      productos.set(f.fuelId, p);
+    }
+    return f;
+  };
 
-    pump.faces.forEach((face, fi) => {
-      face.dispensers.forEach((d, di) => {
-        if (d.status === 'inactivo') return;
-        const cara = fi + 1;
-        const manguera = numeroDe(d.name, di + 1);
-        const r = porDispensador.get(d.id);
-        const fuelId = r?.fuelId || d.fuel;
-        const precio = r && r.fuelPrice > 0 ? r.fuelPrice : precios[fuelId] || 0;
-        const inicial = r ? r.initialReading : null;
-        const final = r && r.finalReading !== undefined && r.finalReading !== null ? r.finalReading : null;
+  const baseDeLectura = (r: DailyReading, pumpNumber: number) => {
+    const c = config.get(r.dispenserId);
+    const cara = caraDe(r.face, 1);
+    const manguera = numeroDe(r.dispenserName, 1);
+    return {
+      key: r.dispenserId, pumpId: r.pumpId, pumpName: r.pumpName || c?.pump.name || r.pumpId, pumpNumber, cara, manguera,
+      label: `${cara}-${manguera}`, fuelId: r.fuelId, fuelName: r.fuelName || c?.fuelName || r.fuelId, fuelColor: c?.color || '#64748b',
+      inicial: r.initialReading, final: r.finalReading ?? null,
+      rollover: r.rollover === true, continuityBreak: r.continuityBreak === true,
+    };
+  };
 
-        let estado: EstadoFila;
-        if (!pump.isActive || d.status === 'mantenimiento' || r?.status === 'mantenimiento') estado = 'mantenimiento';
-        else if (inicial === null) estado = 'sin_inicial';
-        else if (final === null) estado = 'pendiente';
-        else if (final < inicial) estado = 'invalida';
-        else estado = 'ok';
-
-        const litros = estado === 'ok' ? round((final as number) - (inicial as number), 3) : 0;
-        const total = round(litros * precio, 2);
-
-        filas.push({
-          key: d.id,
-          pumpId: pump.id,
-          pumpName: pump.name,
-          pumpNumber,
-          cara,
-          manguera,
-          label: `${cara}-${manguera}`,
-          fuelId,
-          fuelName: r?.fuelName || d.fuelName,
-          fuelColor: d.fuelColor,
-          inicial,
-          final,
-          litros,
-          precio,
-          total,
-          estado,
+  if (!opts.historico) {
+    ordenadas.forEach((pump, pi) => {
+      const pumpNumber = numeroDe(pump.name, pi + 1);
+      const g = grupo(pump.id, pump.name, pumpNumber);
+      pump.faces.forEach((face, fi) => {
+        face.dispensers.forEach((d, di) => {
+          const r = porDispensador.get(d.id);
+          // Inactivo sin lectura no se muestra; con lectura del día sí (no ocultar ventas).
+          if (d.status === 'inactivo' && !r) return;
+          if (r) usadas.add(d.id);
+          const cara = fi + 1;
+          const manguera = numeroDe(d.name, di + 1);
+          const fuelId = r?.fuelId || d.fuel;
+          g.filas.push(fila({
+            key: d.id, pumpId: pump.id, pumpName: pump.name, pumpNumber, cara, manguera, label: `${cara}-${manguera}`,
+            fuelId, fuelName: r?.fuelName || d.fuelName, fuelColor: d.fuelColor,
+            inicial: r ? r.initialReading : null, final: r?.finalReading ?? null,
+            rollover: r?.rollover === true, continuityBreak: r?.continuityBreak === true,
+          }, r, !pump.isActive || d.status === 'mantenimiento'));
         });
-
-        if (estado === 'ok') {
-          const p = productos.get(fuelId) || { fuelId, fuelName: r?.fuelName || d.fuelName, fuelColor: d.fuelColor, litros: 0, total: 0 };
-          p.litros = round(p.litros + litros, 3);
-          p.total = round(p.total + total, 2);
-          productos.set(fuelId, p);
-        }
       });
     });
+  }
 
-    filas.sort((a, b) => a.cara - b.cara || a.manguera - b.manguera);
-    return {
-      pumpId: pump.id,
-      pumpName: pump.name,
-      filas,
-      litros: round(filas.reduce((s, f) => s + f.litros, 0), 3),
-      total: round(filas.reduce((s, f) => s + f.total, 0), 2),
-    };
+  // Lecturas sin dispensador en la configuración (histórico, o borrado/movido hoy): fila desde la lectura.
+  porDispensador.forEach(r => {
+    if (usadas.has(r.dispenserId)) return;
+    const pumpNumber = numeroDe(r.pumpName || '', 99);
+    const g = grupo(r.pumpId || r.pumpName, r.pumpName || r.pumpId, pumpNumber);
+    g.filas.push(fila(baseDeLectura(r, pumpNumber), r, false));
   });
+
+  const grupos: GrupoBomba[] = [...gruposMap.values()]
+    .filter(g => g.filas.length > 0 || !opts.historico)
+    .sort((a, b) => a.pumpNumber - b.pumpNumber || a.pumpId.localeCompare(b.pumpId))
+    .map(g => {
+      g.filas.sort((a, b) => a.cara - b.cara || a.manguera - b.manguera);
+      return {
+        pumpId: g.pumpId,
+        pumpName: g.pumpName,
+        filas: g.filas,
+        litros: round(g.filas.reduce((s, f) => s + f.litros, 0), 3),
+        total: round(g.filas.reduce((s, f) => s + f.total, 0), 2),
+      };
+    });
 
   const todas = grupos.flatMap(g => g.filas);
   return {

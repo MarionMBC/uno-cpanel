@@ -17,6 +17,8 @@ export interface Dispenser {
   status: 'activo' | 'mantenimiento' | 'inactivo';
   serialNumber?: string;
   observations?: string;
+  /** Valor máximo del totalizador antes de volver a cero (L). Default METER_MAX_DEFAULT = 999999.999. */
+  meterMax?: number;
 }
 
 export interface PumpFace {
@@ -53,6 +55,16 @@ export interface DailyReading {
   createdAt?: string;
   closedBy?: string;
   closedAt?: string;
+  /** El totalizador dio la vuelta a cero entre inicial y final: litros = final + meterMax − inicial. */
+  rollover?: boolean;
+  /** meterMax usado en el cálculo del rollover (copiado del dispensador al marcarlo). */
+  meterMax?: number;
+  /** La inicial difiere de la final anterior del mismo dispensador. */
+  continuityBreak?: boolean;
+  /** Final anterior (fecha previa) contra la que se comparó la inicial. */
+  previousFinal?: number;
+  /** Motivo de la diferencia de continuidad. */
+  continuityReason?: string;
 }
 
 export interface FuelReceipt {
@@ -74,6 +86,9 @@ export interface DayStatus {
   status: 'pendiente' | 'en_proceso' | 'cerrado';
   closedBy?: string;
   closedAt?: string;
+  reopenedBy?: string;
+  reopenedAt?: string;
+  reopenReason?: string;
   horometerInitial?: number;
   horometerFinal?: number;
   tanks?: {
@@ -118,6 +133,12 @@ export interface AuditEntry {
   target: string;
   detail: string;
   icon: string;
+  /** Valor anterior (correcciones, reaperturas, continuidad). */
+  before?: string | number;
+  /** Valor nuevo. */
+  after?: string | number;
+  /** Motivo obligatorio en correcciones y reaperturas. */
+  reason?: string;
 }
 
 export interface RolePermissions {
