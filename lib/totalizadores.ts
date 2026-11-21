@@ -81,6 +81,8 @@ export const idLectura = (fecha: string, dispenserId: string) => `${fecha}_${dis
 export function lecturasPorDispensador<T extends Pick<DailyReading, 'id' | 'date' | 'dispenserId'>>(readings: T[]): Map<string, T> {
   const m = new Map<string, T>();
   readings.forEach(r => {
+    // Lecturas sin dispensador no son de ninguna manguera: no entran al cuadro.
+    if (!r.dispenserId) return;
     const actual = m.get(r.dispenserId);
     if (!actual) m.set(r.dispenserId, r);
     else if (actual.id !== idLectura(actual.date, actual.dispenserId) && r.id === idLectura(r.date, r.dispenserId)) m.set(r.dispenserId, r);

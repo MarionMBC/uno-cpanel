@@ -146,3 +146,8 @@ test('hoy: lectura de un dispensador borrado sigue sumando', () => {
   assert.equal(c.total, 10);
   assert.equal(c.grupos.at(-1)?.pumpName, 'Bomba 09');
 });
+
+test('lecturas sin dispensador no aparecen en el cuadro', () => {
+  const m = lecturasPorDispensador([{ id: 'x', date: '2026-11-21', dispenserId: '' } as never, { id: 'y', date: '2026-11-21', dispenserId: 'p1-A-1' } as never]);
+  assert.equal(m.size, 1);
+});

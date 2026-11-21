@@ -42,6 +42,7 @@ function caso(nombre, status, esperaPermitido) {
 
 const hoy = new Date().toISOString().split('T')[0];
 const run = Date.now();
+const futuro = '2099-12-31'; // las pruebas no escriben en el día operativo real
 const admin = await token('admin@uno.local');
 const operador = await token('operador@uno.local');
 const inactivo = await token('inactivo@uno.local');
@@ -58,9 +59,9 @@ caso('sin ficha lee ficha ajena', await op(extrano, 'GET', 'users/admin@uno.loca
 caso('inactivo lee su propia ficha', await op(inactivo, 'GET', 'users/inactivo@uno.local'), true);
 // CA2: operador
 caso('operador lee pumps', await op(operador, 'GET', 'pumps/p1'), true);
-caso('operador registra lectura', await op(operador, 'PATCH', `readings/test_op_${hoy}`, { date: hoy, initialReading: 100, finalReading: 110 }), true);
-caso('operador lectura no numérica', await op(operador, 'PATCH', `readings/test_op2_${hoy}`, { date: hoy, initialReading: 'cien' }), false);
-caso('operador borra lectura', await op(operador, 'DELETE', `readings/test_op_${hoy}`), false);
+caso('operador registra lectura', await op(operador, 'PATCH', `readings/test_op_${futuro}`, { date: futuro, initialReading: 100, finalReading: 110 }), true);
+caso('operador lectura no numérica', await op(operador, 'PATCH', `readings/test_op2_${futuro}`, { date: futuro, initialReading: 'cien' }), false);
+caso('operador borra lectura', await op(operador, 'DELETE', `readings/test_op_${futuro}`), false);
 caso('operador guarda fondo del día', await op(operador, 'PATCH', `dayStatus/${hoy}`, { cashFund: 1500 }), true);
 caso('operador edita precios', await op(operador, 'PATCH', 'prices/op_test', { super: 1 }), false);
 caso('operador edita bombas', await op(operador, 'PATCH', 'pumps/p1', { name: 'X' }), false);
@@ -79,8 +80,8 @@ caso('colección desconocida', await op(admin, 'GET', 'secretos/x'), false);
 
 // Review r1 de TASK-006
 const consulta = await token('consulta@uno.local');
-caso('consulta (sin canCloseDay) cambia inicial ya registrada', await op(consulta, 'PATCH', `readings/test_op_${hoy}`, { date: hoy, initialReading: 50, finalReading: 110 }), false);
-caso('consulta guarda final sin cambiar inicial', await op(consulta, 'PATCH', `readings/test_op_${hoy}`, { date: hoy, initialReading: 100, finalReading: 120 }), true);
+caso('consulta (sin canCloseDay) cambia inicial ya registrada', await op(consulta, 'PATCH', `readings/test_op_${futuro}`, { date: futuro, initialReading: 50, finalReading: 110 }), false);
+caso('consulta guarda final sin cambiar inicial', await op(consulta, 'PATCH', `readings/test_op_${futuro}`, { date: futuro, initialReading: 100, finalReading: 120 }), true);
 { const st = await op(operador, 'GET', 'prices_official/2026-11-23'); caso('operador lee sugerencia oficial (404 = permitido sin doc)', st === 404 ? 200 : st, true); }
 caso('admin escribe sugerencia oficial desde cliente', await op(admin, 'PATCH', 'prices_official/x', { a: 1 }), false);
 caso('operador lee ficha ajena', await op(operador, 'GET', 'users/admin@uno.local'), false);
