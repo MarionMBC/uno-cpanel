@@ -25,6 +25,8 @@ interface AppContextType {
   readings: DailyReading[];
   saveReadings: (readings: DailyReading[]) => Promise<void>;
   loading: boolean;
+  /** Fecha ISO (YYYY-MM-DD) del día operativo que escucha el contexto. */
+  today: string;
   dayData: DayStatus | null;
   updateDayData: (data: Partial<DayStatus>) => Promise<void>;
   users: AppUser[];
@@ -240,6 +242,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       readings, saveReadings,
       users, roles, saveUser, saveRole,
       loading,
+      today: todayDoc,
     }}>
       {children}
     </AppContext.Provider>

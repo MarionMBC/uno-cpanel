@@ -172,7 +172,8 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
             const allRows = p.faces.flatMap(f => f.dispensers);
             const pumpReadings = readings.filter(r => r.pumpId === p.id);
             const liters = pumpReadings.reduce((s, r) => s + (r.finalReading !== undefined ? Math.max(0, r.finalReading - r.initialReading) : 0), 0);
-            const lemp = liters * p.fuel.price;
+            // Cada manguera puede despachar otro producto: usar el precio de su lectura, no el de la bomba.
+            const lemp = pumpReadings.reduce((s, r) => s + (r.finalReading !== undefined ? Math.max(0, r.finalReading - r.initialReading) * r.fuelPrice : 0), 0);
             const completed = pumpReadings.filter(r => r.finalReading !== undefined).length;
             
             return (
