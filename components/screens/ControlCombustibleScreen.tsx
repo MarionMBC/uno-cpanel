@@ -126,6 +126,10 @@ export default function ControlCombustibleScreen() {
       tanks[f] = entry;
     });
     const horo = campo === 'initial' ? horoIni : horoFin;
+    if (horo.trim() !== '' && !Number.isFinite(parseFloat(horo))) {
+      toast.error('Horómetro inválido', 'Ingrese las horas como número.');
+      return;
+    }
     const horoCampo = campo === 'initial' ? 'horometerInitial' : 'horometerFinal';
     try {
       await updateDayData({ tanks, [horoCampo]: horo.trim() === '' ? deleteField() : parseFloat(horo) } as unknown as Partial<DayStatus>);
@@ -176,7 +180,10 @@ export default function ControlCombustibleScreen() {
   const vendidoL = useMemo(() => Object.fromEntries(cuadro.productos.map(p => [p.fuelId, p.litros])) as Record<string, number>, [cuadro]);
   const pendientesPorProducto = useMemo(() => {
     const m: Record<string, number> = {};
-    cuadro.grupos.flatMap(g => g.filas).forEach(f => { if (f.estado === 'pendiente') m[f.fuelId] = (m[f.fuelId] || 0) + 1; });
+    // Toda manguera operable que no suma al vendido (sin final, final < inicial o sin inicial) deja el cuadre provisional.
+    cuadro.grupos.flatMap(g => g.filas).forEach(f => {
+      if (f.estado === 'pendiente' || f.estado === 'invalida' || f.estado === 'sin_inicial') m[f.fuelId] = (m[f.fuelId] || 0) + 1;
+    });
     return m;
   }, [cuadro]);
 
@@ -279,8 +286,11 @@ export default function ControlCombustibleScreen() {
                 <div style={{ ...fila, fontSize: 12, color: '#64748b' }}><span>Inicial</span><span style={mono}>{dayData?.horometerInitial !== undefined ? `${dayData.horometerInitial} hrs` : '—'}</span></div>
                 <div style={{ ...fila, fontSize: 13, fontWeight: 800, color: '#0f172a', borderTop: '1px solid #e2e8f0', paddingTop: 8 }}>
                   <span>Trabajado</span>
-                  <span style={mono}>{dayData?.horometerInitial !== undefined && horoFin !== '' ? `${fmtNum(Math.max(0, parseFloat(horoFin) - dayData.horometerInitial), 2)} hrs` : '—'}</span>
+                  <span style={mono}>{dayData?.horometerInitial !== undefined && Number.isFinite(parseFloat(horoFin)) ? `${fmtNum(parseFloat(horoFin) - dayData.horometerInitial, 2)} hrs` : '—'}</span>
                 </div>
+                {dayData?.horometerInitial !== undefined && Number.isFinite(parseFloat(horoFin)) && parseFloat(horoFin) < dayData.horometerInitial && (
+                  <div style={{ fontSize: 11.5, color: '#dc2626', fontWeight: 600 }}>Las horas finales son menores que las iniciales.</div>
+                )}
               </div>
             </div>
             {TANQUES.map(f => {
@@ -312,7 +322,7 @@ export default function ControlCombustibleScreen() {
                           </div>
                           {pendientesPorProducto[f] > 0 && (
                             <div style={{ fontWeight: 600, fontSize: 11.5, color: '#b45309' }}>
-                              Provisional: {pendientesPorProducto[f]} manguera{pendientesPorProducto[f] > 1 ? 's' : ''} sin lectura final.
+                              Provisional: {pendientesPorProducto[f]} manguera{pendientesPorProducto[f] > 1 ? 's' : ''} sin lectura completa.
                             </div>
                           )}
                           <div style={{ ...fila, fontWeight: 600, fontSize: 11.5 }}>
