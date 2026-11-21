@@ -8,7 +8,7 @@ import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import { fmtL, fmtNum, getDayOfWeekEs, getMonthEs } from '@/lib/utils';
-import { LITERS_PER_GALLON } from '@/lib/constants';
+import { LITERS_PER_GALLON, productosDeBomba } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
 
 const TREND_14D = (() => {
@@ -180,12 +180,12 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
               <Card key={p.id} hoverable>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 9, background: p.fuel.color + '22', color: p.fuel.color, display: 'grid', placeItems: 'center' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 9, background: '#fbbf2422', color: '#d97706', display: 'grid', placeItems: 'center' }}>
                       <Icon name="fuel" size={18}/>
                     </div>
                     <div>
                       <div style={{ fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{p.name}</div>
-                      <div style={{ fontSize: 11, color: '#64748b' }}>{p.fuel.name} · L. {p.fuel.price.toFixed(2)}/L</div>
+                      <div style={{ fontSize: 11, color: '#64748b' }}>{productosDeBomba(p).map(f => f.name).join(' / ')}</div>
                     </div>
                   </div>
                   {p.isActive

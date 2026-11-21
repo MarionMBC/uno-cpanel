@@ -7,10 +7,10 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole } from '@/types';
-import { INITIAL_PUMPS, PRICE_HISTORY } from '@/lib/constants';
+import { INITIAL_PUMPS, PRICE_HISTORY, FUELS, DEFAULT_DIFERENCIAL_POR_LITRO } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
+import { diaOperativo } from '@/lib/fecha';
 
-const todayDoc = new Date().toISOString().split('T')[0];
 
 interface AppContextType {
   pumps: Pump[];
@@ -38,7 +38,8 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | null>(null);
 
-const DEFAULT_PRICES = { super: 108.42, regular: 102.18, diesel: 96.74 };
+// Precio por litro de respaldo mientras carga el historial (mismos valores que la semilla).
+const DEFAULT_PRICES = Object.fromEntries(FUELS.map(f => [f.id, f.price])) as { super: number; regular: number; diesel: number };
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [pumps, setPumpsState] = useState<Pump[]>([]);
@@ -55,6 +56,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Las reglas de Firestore solo permiten leer/escribir con sesión y ficha activa:
   // la siembra y las suscripciones arrancan cuando hay un usuario autorizado.
   const autorizado = !!appUser && appUser.status === 'activo';
+
+  // Día operativo en hora de Honduras; se revisa cada minuto para cambiar de día sin recargar.
+  const [todayDoc, setTodayDoc] = useState(() => diaOperativo());
+  useEffect(() => {
+    const t = setInterval(() => setTodayDoc(d => { const n = diaOperativo(); return n === d ? d : n; }), 60000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!authLoading && !autorizado) {
@@ -87,9 +95,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (PRICE_HISTORY as FuelPrice[]).forEach((p, i) => {
           const { id: _id, ...rest } = p as FuelPrice & { id?: string };
           // add a fake timestamp to seed data to allow sorting
-          batch.set(doc(db, 'prices', `seed_${i}`), { ...rest, timestamp: new Date('2026-04-20').getTime() - i * 86400000 });
+          batch.set(doc(db, 'prices', `seed_${i}`), { ...rest, timestamp: new Date('2026-11-23T06:01:00Z').getTime() - i * 86400000 });
         });
         await batch.commit();
+      }
+
+      const settingsSnap = await getDocs(collection(db, 'settings'));
+      if (settingsSnap.empty) {
+        await setDoc(doc(db, 'settings', 'precios'), { diferencialPorLitro: { ...DEFAULT_DIFERENCIAL_POR_LITRO } });
       }
 
       const rolesSnap = await getDocs(collection(db, 'roles'));
@@ -223,11 +236,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setDayStatus = useCallback(async (s: DayStatusValue) => {
     await setDoc(doc(db, 'dayStatus', todayDoc), { status: s }, { merge: true });
-  }, []);
+  }, [todayDoc]);
 
   const updateDayData = useCallback(async (data: Partial<DayStatus>) => {
     await setDoc(doc(db, 'dayStatus', todayDoc), { date: todayDoc, ...data }, { merge: true });
-  }, []);
+  }, [todayDoc]);
 
   const addAuditEntry = useCallback(async (entry: Omit<AuditEntry, 'id'>) => {
     await addDoc(collection(db, 'auditLog'), entry);

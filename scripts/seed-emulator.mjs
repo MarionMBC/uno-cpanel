@@ -114,7 +114,7 @@ function buildPumps() {
 }
 
 async function main() {
-  const today = new Date().toISOString().split('T')[0]; // misma convención que AppContext
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Tegucigalpa' }).format(new Date()); // día operativo HN (lib/fecha.ts)
   const pricePerLiter = Object.fromEntries(Object.values(FUELS).map(f => [f.id, f.pricePerLiter]));
 
   await ensureAuthUser(SEED_USER);
