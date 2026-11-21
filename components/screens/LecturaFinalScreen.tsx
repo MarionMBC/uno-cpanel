@@ -55,8 +55,10 @@ export default function LecturaFinalScreen() {
     const fVal = parseFloat(finals[id]) || 0;
     const liters = Math.max(0, fVal - iVal);
     const gallons = liters / LITERS_PER_GALLON;
-    const lemp = round(liters * getPrice(fuelId), 2); // precio por litro, mismo cálculo que el Cuadro de totalizadores
-    return { liters, gallons, lemp, initVal: iVal, price: getPrice(fuelId) };
+    // Precio de la lectura (fijado al abrir el día); el vigente solo si falta. Mismo criterio y redondeo que el Cuadro.
+    const price = existing.fuelPrice > 0 ? existing.fuelPrice : getPrice(existing.fuelId || fuelId);
+    const lemp = round(liters * price, 2);
+    return { liters, gallons, lemp, initVal: iVal, price };
   };
 
   const totals = rows.reduce((s, r) => {

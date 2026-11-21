@@ -66,7 +66,9 @@ function numeroDe(texto: string, fallback: number): number {
 }
 
 export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: PreciosPorLitro): Cuadro {
-  const porDispensador = new Map(readings.map(r => [r.dispenserId, r]));
+  // Si hubiera lecturas duplicadas de una manguera, manda la primera (mismo criterio que Lectura final).
+  const porDispensador = new Map<string, DailyReading>();
+  readings.forEach(r => { if (!porDispensador.has(r.dispenserId)) porDispensador.set(r.dispenserId, r); });
   const productos = new Map<string, ResumenProducto>();
 
   const ordenadas = [...pumps].sort((a, b) => numeroDe(a.name, 0) - numeroDe(b.name, 0) || a.id.localeCompare(b.id));
@@ -87,7 +89,7 @@ export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: Pr
         const final = r && r.finalReading !== undefined && r.finalReading !== null ? r.finalReading : null;
 
         let estado: EstadoFila;
-        if (d.status === 'mantenimiento' || r?.status === 'mantenimiento') estado = 'mantenimiento';
+        if (!pump.isActive || d.status === 'mantenimiento' || r?.status === 'mantenimiento') estado = 'mantenimiento';
         else if (inicial === null) estado = 'sin_inicial';
         else if (final === null) estado = 'pendiente';
         else if (final < inicial) estado = 'invalida';

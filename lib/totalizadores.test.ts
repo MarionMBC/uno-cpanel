@@ -74,3 +74,12 @@ test('exportación en layout de Tito', () => {
   assert.deepEqual(aoa[1], ['MANGUERA', 'LECTURA INICIAL', 'LECTURA FINAL', 'LITROS', 'PRECIO', 'TOTAL LPS']);
   assert.deepEqual(aoa.at(-1), ['', '', '', '', 'TOTAL EN CAJA', 1840.5]);
 });
+
+test('lecturas duplicadas: manda la primera; bomba inactiva va como mantenimiento', () => {
+  const pumps = [pump('p1', 'Bomba 01', [[disp('p1', 'A', 1, 'diesel')]]), { ...pump('p2', 'Bomba 02', [[disp('p2', 'A', 1, 'diesel')]]), isActive: false }];
+  const c = buildCuadro(pumps, [reading('p1-A-1', 'diesel', 0, 10), reading('p1-A-1', 'diesel', 0, 99), reading('p2-A-1', 'diesel', 0, 5)], PRECIOS);
+  assert.equal(c.grupos[0].filas[0].litros, 10);
+  assert.equal(c.grupos[1].filas[0].estado, 'mantenimiento');
+  assert.equal(c.total, 340.5);
+  assert.equal(c.sinInicial + c.pendientes + c.invalidas, 0);
+});

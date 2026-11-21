@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { db } from '@/lib/firebase';
@@ -17,7 +17,7 @@ import { DailyReading, DayStatus } from '@/types';
 import { buildCuadro, cuadroAoa, FilaCuadro } from '@/lib/totalizadores';
 import { fmtL, fmtNum } from '@/lib/utils';
 
-const isoHoy = () => new Date().toISOString().split('T')[0]; // misma convención que AppContext
+const SIN_LECTURAS: DailyReading[] = [];
 const fechaHN = (iso: string) => iso.split('-').reverse().join('/');
 
 const mono: React.CSSProperties = { fontFamily: 'ui-monospace, monospace', fontVariantNumeric: 'tabular-nums' };
@@ -33,56 +33,77 @@ function EstadoBadge({ f }: { f: FilaCuadro }) {
 }
 
 export default function TotalizadoresScreen() {
-  const { pumps, readings, currentPrices, dayData, roles } = useApp();
+  const { pumps, readings, currentPrices, dayData, roles, today } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
+  // El value de ToastProvider cambia en cada render: usarlo vía ref evita relanzar la carga.
+  const toastRef = useRef(toast);
+  useEffect(() => { toastRef.current = toast; }, [toast]);
 
-  const hoy = dayData?.date || isoHoy();
+  const hoy = today;
   const [fecha, setFecha] = useState(hoy);
   const esHoy = fecha === hoy;
 
-  const [otrasLecturas, setOtrasLecturas] = useState<DailyReading[]>([]);
-  const [otroDia, setOtroDia] = useState<DayStatus | null>(null);
-  const [cargando, setCargando] = useState(false);
+  // Datos de otra fecha, etiquetados con la fecha que cargaron: nunca se muestran bajo otra fecha.
+  const [otro, setOtro] = useState<{ fecha: string; lecturas: DailyReading[]; dia: DayStatus | null; error: boolean } | null>(null);
 
   useEffect(() => {
     if (esHoy) return;
     let vivo = true;
     (async () => {
-      setCargando(true);
       try {
         const [snap, day] = await Promise.all([
           getDocs(query(collection(db, 'readings'), where('date', '==', fecha))),
           getDoc(doc(db, 'dayStatus', fecha)),
         ]);
         if (!vivo) return;
-        setOtrasLecturas(snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyReading)));
-        setOtroDia(day.exists() ? (day.data() as DayStatus) : null);
+        setOtro({
+          fecha,
+          lecturas: snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyReading)),
+          dia: day.exists() ? (day.data() as DayStatus) : null,
+          error: false,
+        });
       } catch {
-        if (vivo) toast.error('No se pudo cargar', `No se encontraron lecturas del ${fechaHN(fecha)}.`);
-      } finally {
-        if (vivo) setCargando(false);
+        if (!vivo) return;
+        setOtro({ fecha, lecturas: [], dia: null, error: true });
+        toastRef.current.error('No se pudo cargar', `No fue posible leer las lecturas del ${fechaHN(fecha)}.`);
       }
     })();
     return () => { vivo = false; };
-  }, [fecha, esHoy, toast]);
+  }, [fecha, esHoy]);
 
-  const lecturas = esHoy ? readings : otrasLecturas;
-  const dia = esHoy ? dayData : otroDia;
+  const otroListo = otro?.fecha === fecha ? otro : null;
+  const cargando = !esHoy && !otroListo;
+  const lecturas = useMemo(() => (esHoy ? readings : otroListo?.lecturas ?? SIN_LECTURAS), [esHoy, readings, otroListo]);
+  const dia = esHoy ? dayData : otroListo?.dia ?? null;
 
   const cuadro = useMemo(() => buildCuadro(pumps, lecturas, currentPrices), [pumps, lecturas, currentPrices]);
 
-  const puedeEditar = roles.find(r => r.id === appUser?.roleId)?.permissions?.canCloseDay === true;
+  const diaCerrado = dia?.status === 'cerrado';
+  const puedeEditar = roles.find(r => r.id === appUser?.roleId)?.permissions?.canCloseDay === true && !diaCerrado && !cargando;
   const fondoGuardado = dia?.cashFund ?? 0;
   const [fondoTxt, setFondoTxt] = useState<string | null>(null);
   const fondo = fondoTxt !== null ? parseFloat(fondoTxt) || 0 : fondoGuardado;
   const cambiado = fondoTxt !== null && fondo !== fondoGuardado;
 
+  const [guardando, setGuardando] = useState(false);
   const guardarFondo = async () => {
-    await setDoc(doc(db, 'dayStatus', fecha), { date: fecha, cashFund: fondo }, { merge: true });
-    if (!esHoy) setOtroDia(d => ({ ...(d || { date: fecha, status: 'pendiente' }), cashFund: fondo }));
-    setFondoTxt(null);
-    toast.success('Fondo de cambio guardado', `${fmtL(fondo)} para el ${fechaHN(fecha)}.`);
+    const f = fecha; // la fecha puede cambiar mientras se guarda
+    setGuardando(true);
+    try {
+      // Si el documento del día no existe todavía, se crea con el mismo estado por defecto que AppContext.
+      const base = dia ? {} : { status: 'en_proceso' as const };
+      await setDoc(doc(db, 'dayStatus', f), { date: f, cashFund: fondo, ...base }, { merge: true });
+      if (f !== today) {
+        setOtro(o => (o && o.fecha === f ? { ...o, dia: { ...(o.dia || { date: f, status: 'en_proceso' }), cashFund: fondo } } : o));
+      }
+      setFondoTxt(null);
+      toast.success('Fondo de cambio guardado', `${fmtL(fondo)} para el ${fechaHN(f)}.`);
+    } catch {
+      toast.error('No se guardó', 'Revisa la conexión e intenta de nuevo.');
+    } finally {
+      setGuardando(false);
+    }
   };
 
   const exportar = () => {
@@ -124,7 +145,7 @@ export default function TotalizadoresScreen() {
                 style={{ height: 38, borderRadius: 9, border: '1px solid rgba(255,255,255,.2)', background: 'rgba(255,255,255,.08)', color: 'white', padding: '0 10px', fontFamily: 'inherit', fontSize: 13, colorScheme: 'dark' }}
               />
             </label>
-            <Button variant="accent" icon="download" onClick={exportar}>Exportar Excel</Button>
+            <Button variant="accent" icon="download" onClick={exportar} disabled={cargando}>Exportar Excel</Button>
           </div>
         </div>
       </Card>
@@ -151,7 +172,7 @@ export default function TotalizadoresScreen() {
             <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>Totalizadores por manguera</div>
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Manguera = cara-manguera de cada bomba. Total = litros × precio por litro.</div>
           </div>
-          {cargando && <Badge tone="info" dot>Cargando…</Badge>}
+          <div aria-live="polite">{cargando && <Badge tone="info" dot>Cargando…</Badge>}</div>
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -239,9 +260,13 @@ export default function TotalizadoresScreen() {
               disabled={!puedeEditar}
               style={{ flex: 1 }}
             />
-            <Button variant="primary" icon="check" onClick={guardarFondo} disabled={!puedeEditar || !cambiado}>Guardar</Button>
+            <Button variant="primary" icon="check" onClick={guardarFondo} disabled={!puedeEditar || !cambiado || guardando}>Guardar</Button>
           </div>
-          {!puedeEditar && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 8 }}>Solo quien puede cerrar el día edita el fondo de cambio.</div>}
+          {!puedeEditar && !cargando && (
+            <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 8 }}>
+              {diaCerrado ? 'El día está cerrado: el fondo de cambio ya no se edita.' : 'Solo quien puede cerrar el día edita el fondo de cambio.'}
+            </div>
+          )}
         </Card>
       </div>
     </div>
