@@ -5,13 +5,14 @@ import {
   collection, doc, setDoc, addDoc, writeBatch, onSnapshot, query, orderBy, getDocs, where, runTransaction, serverTimestamp, Timestamp, limit
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole } from '@/types';
+import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole, Operacion } from '@/types';
 import { INITIAL_PUMPS, PRICE_HISTORY, FUELS, DEFAULT_DIFERENCIAL_POR_LITRO } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
 import { diaOperativo } from '@/lib/fecha';
 import { idLectura } from '@/lib/totalizadores';
 import { ordenarPorVigencia, precioVigente, proximoPrecio, type Precios } from '@/lib/precios';
 import { armarEntrada, ordenarAuditoria, type AuditInput } from '@/lib/auditoria';
+import { normalizarOperacion, OPERACION_DEFAULT } from '@/lib/turnos';
 
 
 interface AppContextType {
@@ -52,6 +53,8 @@ interface AppContextType {
   roles: AppRole[];
   saveUser: (user: AppUser) => Promise<void>;
   saveRole: (role: AppRole) => Promise<void>;
+  /** settings/operacion (TASK-019). Sin doc: turnos apagados. */
+  operacion: Operacion;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -71,6 +74,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [readings, setReadingsState] = useState<DailyReading[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [roles, setRoles] = useState<AppRole[]>([]);
+  const [operacion, setOperacion] = useState<Operacion>(OPERACION_DEFAULT);
   const [loading, setLoading] = useState(true);
   const { appUser, loading: authLoading } = useAuth();
   // Las reglas de Firestore solo permiten leer/escribir con sesión y ficha activa:
@@ -93,7 +97,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!authLoading && !autorizado) {
       // Sesión cerrada: no dejar en memoria datos del usuario anterior (p. ej. auditoría de un admin).
       setPumpsState([]); setAuditLog([]); setPriceHistory([]); setReadingsState([]);
-      setUsers([]); setRoles([]); setDayData(null);
+      setUsers([]); setRoles([]); setDayData(null); setOperacion(OPERACION_DEFAULT);
       setLoading(false);
     }
     if (autorizado) setLoading(true);
@@ -224,6 +228,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { unsubPumps(); unsubPrices(); unsubDay(); unsubReadings(); unsubRoles(); };
   }, [autorizado, todayDoc]);
 
+  // Turnos (TASK-019): fuera de la carga inicial; si no existe o falla, todo sigue como siempre (flag apagado).
+  useEffect(() => {
+    if (!autorizado) return;
+    return onSnapshot(
+      doc(db, 'settings', 'operacion'),
+      snap => setOperacion(normalizarOperacion(snap.exists() ? snap.data() : undefined)),
+      e => { console.warn('Sin acceso a settings/operacion:', e.message); setOperacion(OPERACION_DEFAULT); },
+    );
+  }, [autorizado]);
+
   // Auditoría y usuarios solo para roles con permiso (las reglas los niegan al resto).
   const permisos = roles.find(r => r.id === appUser?.roleId)?.permissions;
   const verAuditoria = autorizado && permisos?.canViewAudit === true;
@@ -351,6 +365,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       currentPrices, setCurrentPrices, precioActual, precioProximo, preciosEn,
       readings, saveReadings, createInitialReadings,
       users, roles, saveUser, saveRole,
+      operacion,
       loading,
       today: todayDoc,
     }}>

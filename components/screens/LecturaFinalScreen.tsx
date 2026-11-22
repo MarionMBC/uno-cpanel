@@ -19,6 +19,7 @@ import * as XLSX from 'xlsx';
 import {
   calcVenta, excedeTope, FilaFinal, filasLecturaFinal, lecturasPorDispensador, litrosEntre, LITROS_MAX_DIA, METER_RESOLUCION, rompeContinuidad, round, sumarVentas, Venta,
 } from '@/lib/totalizadores';
+import { bloqueoCierre } from '@/lib/turnosDb';
 
 const MOTIVO_MIN = 5;
 const fechaHN = (iso: string) => iso.split('-').reverse().join('/');
@@ -33,7 +34,7 @@ const msgInvalida = (v: Venta | null) => v?.motivo === 'tope'
   : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
 
 export default function LecturaFinalScreen() {
-  const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles, today } = useApp();
+  const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles, today, operacion } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -203,12 +204,30 @@ export default function LecturaFinalScreen() {
     }
   };
 
-  const handleConfirmClick = () => {
+  /** B7 (TASK-019): con turnos activos, el día solo cierra con todos sus turnos cerrados y arqueados. */
+  const turnosImpidenCierre = async (): Promise<boolean> => {
+    if (!operacion.shiftsEnabled) return false;
+    let razones: string[];
+    try {
+      razones = await bloqueoCierre(today);
+    } catch (e) {
+      console.error(e);
+      toast.error('No se cerró el día', 'No se pudieron revisar los turnos del día.');
+      return true;
+    }
+    if (razones.length === 0) return false;
+    toast.error('Turnos pendientes', `${razones.slice(0, 3).join(' ')}${razones.length > 3 ? ` (+${razones.length - 3})` : ''} Revísalo en Turnos.`);
+    return true;
+  };
+
+  const handleConfirmClick = async () => {
     if (!puedeCerrar) return;
+    if (await turnosImpidenCierre()) return;
     if (prepararFinales(true)) setConfirmOpen(true);
   };
 
   const handleClose = async () => {
+    if (await turnosImpidenCierre()) { setConfirmOpen(false); return; }
     const finales = prepararFinales(true);
     if (!finales) return;
     const autor = appUser?.email || appUser?.name || 'unknown';

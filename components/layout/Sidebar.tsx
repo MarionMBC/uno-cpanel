@@ -19,6 +19,8 @@ const ALL_ITEMS = [
   { key: 'lectura-inicial', label: 'Lectura inicial', icon: 'log-in' },
   { key: 'lectura-final', label: 'Lectura final', icon: 'log-out' },
   { key: 'totalizadores', label: 'Cuadro de totalizadores', icon: 'list' },
+  // Solo con settings/operacion.shiftsEnabled (TASK-019).
+  { key: 'turnos', label: 'Turnos', icon: 'users', flag: 'shiftsEnabled' },
   { key: 'control-combustible', label: 'Control inventario', icon: 'droplet', perm: 'canManageInventory' },
   { key: 'reporte-diario', label: 'Reporte diario', icon: 'file' },
   { key: 'reporte-mensual', label: 'Reporte mensual', icon: 'calendar' },
@@ -30,19 +32,20 @@ const ALL_ITEMS = [
 
 export default function Sidebar({ route, setRoute, dayStatus, isOpen = false }: SidebarProps) {
   const { appUser } = useAuth();
-  const { roles } = useApp();
+  const { roles, operacion } = useApp();
   const now = new Date();
   const timeStr = now.toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' });
 
   const allowedItems = useMemo(() => {
     const userRole = roles.find(r => r.id === appUser?.roleId);
-    if (!userRole) return ALL_ITEMS.filter(it => !it.perm);
-    
-    return ALL_ITEMS.filter(it => {
+    const items = ALL_ITEMS.filter(it => !it.flag || operacion.shiftsEnabled);
+    if (!userRole) return items.filter(it => !it.perm);
+
+    return items.filter(it => {
       if (!it.perm) return true;
       return userRole.permissions[it.perm as keyof typeof userRole.permissions] === true;
     });
-  }, [roles, appUser]);
+  }, [roles, appUser, operacion.shiftsEnabled]);
 
   return (
     <aside className={`sidebar-container ${isOpen ? 'open' : ''}`}>

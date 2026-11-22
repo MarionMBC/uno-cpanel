@@ -22,7 +22,10 @@ async function token(email, password = 'uno12345') {
 }
 const uids = {};
 
-const val = v => (typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v } : { booleanValue: v });
+const val = v => (typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v }
+  : Array.isArray(v) ? { arrayValue: { values: v.map(val) } }
+  : v && typeof v === 'object' ? { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k, x]) => [k, val(x)])) } }
+  : { booleanValue: v });
 const body = obj => JSON.stringify({ fields: Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, val(v)])) });
 
 async function op(tk, method, path, data) {
@@ -132,10 +135,52 @@ caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `
 caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
 caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
 
+// ─── TASK-019: turnos, lecturas por turno y arqueo por bombero ───
+{
+  const operador2 = await token('operador2@uno.local');
+  const fT = `2099-02-${String(run % 28 + 1).padStart(2, '0')}`;
+  const tpl = `R${run % 1000000}`;
+  const sid = `${fT}_${tpl}`;
+  const asig = [{ email: 'consulta@uno.local', name: 'Solo Consulta', dispenserIds: ['p1-A-1'], cashFund: 500 }, { email: 'operador2@uno.local', name: 'Operador Dos', dispenserIds: ['p1-A-2'], cashFund: 500 }];
+  const turnoDoc = { date: fT, templateId: tpl, name: 'Prueba', status: 'abierto', assignments: asig, attendantEmails: ['consulta@uno.local', 'operador2@uno.local'] };
+  caso('consulta (sin canCloseDay) abre turno', await op(consulta, 'PATCH', `shifts/${sid}`, turnoDoc), false);
+  caso('operador abre turno con id que no coincide', await op(operador, 'PATCH', `shifts/${fT}_OTRO${run % 1000}`, turnoDoc), false);
+  caso('operador abre turno cerrado de entrada', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'cerrado' }), false);
+  caso('operador abre turno', await op(operador, 'PATCH', `shifts/${sid}`, turnoDoc), true);
+  caso('sin ficha lee turno', await op(extrano, 'GET', `shifts/${sid}`), false);
+  caso('consulta lee turno', await op(consulta, 'GET', `shifts/${sid}`), true);
+  const lr = `shiftReadings/${sid}_p1-A-1`;
+  caso('consulta crea lectura de turno', await op(consulta, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100 }), false);
+  caso('operador crea lectura de turno con id ajeno', await op(operador, 'PATCH', `shiftReadings/${sid}_p9`, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100 }), false);
+  caso('operador crea lectura de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100 }), true);
+  caso('operador cambia inicial de lectura de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 90 }), false);
+  caso('operador guarda final de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 150 }), true);
+  caso('operador borra lectura de turno', await op(operador, 'DELETE', lr), false);
+  const arq = (email, extra = {}) => ({ shiftId: sid, date: fT, email, cash: 100, card: 0, credits: 0, partialDrops: 0, ...extra });
+  caso('bombero (consulta) declara su propio arqueo', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local')), true);
+  caso('bombero declara el arqueo de otro', await op(consulta, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), false);
+  caso('bombero se marca recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'consulta@uno.local' })), false);
+  caso('arqueo con monto negativo', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: -1 })), false);
+  caso('arqueo de no asignado (aunque sea admin)', await op(admin, 'PATCH', `cashCounts/${sid}_extrano@uno.local`, arq('extrano@uno.local')), false);
+  caso('operador cierra turno', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'cerrado' }), true);
+  caso('operador modifica turno cerrado', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'abierto' }), false);
+  caso('operador cambia final con turno cerrado', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 160 }), false);
+  caso('encargado recibe arqueo', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'operador@uno.local' })), true);
+  caso('bombero cambia arqueo ya recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 1 })), false);
+  caso('bombero (operador2) declara su arqueo', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), true);
+  caso('admin borra arqueo', await op(admin, 'DELETE', `cashCounts/${sid}_consulta@uno.local`), false);
+  caso('admin borra turno', await op(admin, 'DELETE', `shifts/${sid}`), false);
+  caso('consulta escribe puntero de turno', await op(consulta, 'PATCH', 'shiftState/actual', { testPing: run }), false);
+  caso('operador escribe puntero con otro id', await op(operador, 'PATCH', 'shiftState/otro', { testPing: run }), false);
+  caso('operador escribe puntero de turno', await op(operador, 'PATCH', 'shiftState/actual', { testPing: run }), true);
+  caso('operador (sin canManagePumps) edita settings/operacion', await op(operador, 'PATCH', 'settings/operacion', { testPing: run }), false);
+  caso('admin edita settings/operacion', await op(admin, 'PATCH', 'settings/operacion', { testPing: run }), true);
+}
+
 // Limpieza: lo creado por las pruebas se borra con la credencial de administrador del emulador
 // (Bearer owner, ignora reglas) para no ensuciar la auditoría ni los datos de la app local.
 async function limpiar() {
-  for (const col of ['auditLog', 'readings', 'prices', 'dayStatus', 'users', 'roles']) {
+  for (const col of ['auditLog', 'readings', 'prices', 'dayStatus', 'users', 'roles', 'shifts', 'shiftReadings', 'cashCounts']) {
     const r = await fetch(`${FS}/${col}?pageSize=300`, { headers: { Authorization: 'Bearer owner' } });
     const j = await r.json();
     for (const d of j.documents || []) {
