@@ -130,5 +130,24 @@ caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `
 caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
 caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
 
+// Limpieza: lo creado por las pruebas se borra con la credencial de administrador del emulador
+// (Bearer owner, ignora reglas) para no ensuciar la auditoría ni los datos de la app local.
+async function limpiar() {
+  for (const col of ['auditLog', 'readings', 'prices', 'dayStatus', 'users', 'roles']) {
+    const r = await fetch(`${FS}/${col}?pageSize=300`, { headers: { Authorization: 'Bearer owner' } });
+    const j = await r.json();
+    for (const d of j.documents || []) {
+      const id = d.name.split('/').pop();
+      const f = d.fields || {};
+      const accion = f.action?.stringValue;
+      const deLaPrueba = id.includes(String(run)) || id.startsWith('test_') || id.startsWith('rvr') || id.startsWith('fake_')
+        || id.startsWith('2099-') || id.startsWith('admin_test') || id.startsWith('hack') || id.startsWith('robo')
+        || (col === 'auditLog' && ['x', 'Lectura', 'Cierre del día', 'y'].includes(accion ?? '') && !f.target);
+      if (deLaPrueba) await fetch(`${FS}/${col}/${id}`, { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });
+    }
+  }
+}
+await limpiar();
+
 console.log(fallos ? `\n${fallos} caso(s) fallaron` : '\nTodas las reglas se comportan como se espera');
 process.exit(fallos ? 1 : 0);
