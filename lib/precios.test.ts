@@ -31,6 +31,15 @@ test('ordenarPorVigencia: desc por vigencia, no por fecha de registro', () => {
   assert.deepEqual(ordenarPorVigencia(h).map(x => x.id), ['c', 'a', 'b']);
 });
 
+test('ordenarPorVigencia: entradas sin vigencia van al final con orden estable', () => {
+  const sin = (id: string) => ({ id, super: 1, regular: 1, diesel: 1 }) as unknown as ReturnType<typeof P>;
+  const h = [sin('x'), P('a', '2026-11-23T06:00:00.000Z', 100), sin('y')];
+  const r = ordenarPorVigencia(h).map(x => x.id);
+  assert.equal(r[0], 'a');
+  assert.deepEqual(r.slice(1).sort(), ['x', 'y']);
+  assert.deepEqual(ordenarPorVigencia([sin('x'), sin('y')]).map(x => x.id), ['x', 'y']);
+});
+
 test('calcularVigencia: ahora, mañana 00:00 HN y fecha futura', () => {
   const ahora = new Date('2026-11-21T23:30:00-06:00'); // ya es 22 en UTC
   assert.deepEqual(calcularVigencia('ahora', ahora), { iso: ahora.toISOString() });

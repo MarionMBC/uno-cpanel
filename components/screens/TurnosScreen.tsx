@@ -47,7 +47,8 @@ export default function TurnosScreen() {
   const toast = useToast();
   const role = roles.find(r => r.id === appUser?.roleId);
   const puedeCerrar = role?.permissions?.canCloseDay === true;
-  const miCorreo = (appUser?.email || '').toLowerCase();
+  // Las reglas comparan con el correo de la sesión de Firebase Auth; la ficha es respaldo.
+  const miCorreo = (user?.email || appUser?.email || '').toLowerCase();
   const autor = { email: miCorreo, name: appUser?.name || miCorreo };
   const precios = currentPrices as unknown as Record<string, number>;
 

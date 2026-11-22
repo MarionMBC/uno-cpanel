@@ -204,10 +204,12 @@ export async function corregirFinalTurno(p: {
   const turno0 = { id: s0.id, ...s0.data() } as Shift;
   const [est0, ss, ls] = await Promise.all([
     getDoc(refEstado()),
-    getDocs(query(collection(db, 'shifts'), where('date', '>=', turno0.date))),
-    getDocs(query(collection(db, 'shiftReadings'), where('date', '>=', turno0.date))),
+    // Un solo campo por consulta (sin índice compuesto) y sin traer todo lo posterior a un día viejo.
+    getDocs(query(collection(db, 'shifts'), where('dispenserIds', 'array-contains', p.dispenserId))),
+    getDocs(query(collection(db, 'shiftReadings'), where('dispenserId', '==', p.dispenserId))),
   ]);
-  const pos = posterioresDeManguera(turno0, p.dispenserId, ss.docs.map(d => ({ id: d.id, ...d.data() } as Shift)), ls.docs.map(d => lecturaTurnoDe(d.id, d.data())));
+  const desde = <T extends { date: string }>(xs: T[]) => xs.filter(x => x.date >= turno0.date);
+  const pos = posterioresDeManguera(turno0, p.dispenserId, desde(ss.docs.map(d => ({ id: d.id, ...d.data() } as Shift))), desde(ls.docs.map(d => lecturaTurnoDe(d.id, d.data()))));
   return runTransaction(db, async tx => {
     const s = await tx.get(doc(db, 'shifts', p.shiftId));
     if (!s.exists() || s.data().status !== 'cerrado') throw new Error('Solo se corrige la final de un turno cerrado.');
@@ -263,7 +265,11 @@ export async function corregirFinalTurno(p: {
     return {
       antes: sr.finalReading as number, rolloverAntes: sr.rollover === true, arqueo,
       finalDiaria: cambioDiaria ? { antes: diaria?.finalReading ?? null, despues: plan.diaria?.finalReading as number } : null,
-      cierraRuptura: limpiaRuptura, avisoContinuidad: plan.avisoContinuidad,
+      cierraRuptura: limpiaRuptura,
+      avisoContinuidad: plan.avisoContinuidad
+        ?? (plan.cierraRuptura && sig?.continuityBreak === true && !diaSigAbierto
+          ? `La diferencia con el turno ${pos.siguiente?.nombre ?? 'siguiente'} quedó cerrada, pero su marca de continuidad se quita al reabrir el día ${sig.date.split('-').reverse().join('/')}.`
+          : null),
     };
   });
 }

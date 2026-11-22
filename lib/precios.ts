@@ -29,7 +29,9 @@ const ms = (iso: string) => (iso ? Date.parse(iso) : NaN);
 export function ordenarPorVigencia<T extends ConVigencia>(historial: T[]): T[] {
   return [...historial].sort((a, b) => {
     const va = ms(vigenciaDe(a)), vb = ms(vigenciaDe(b));
-    if (va !== vb) return Number.isNaN(va) ? 1 : Number.isNaN(vb) ? -1 : vb - va;
+    const na = Number.isNaN(va), nb = Number.isNaN(vb);
+    if (na !== nb) return na ? 1 : -1;
+    if (!na && va !== vb) return vb - va;
     return (b.timestamp ?? 0) - (a.timestamp ?? 0);
   });
 }
