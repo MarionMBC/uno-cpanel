@@ -15,7 +15,7 @@ import { FUELS, LITERS_PER_GALLON } from '@/lib/constants';
 import { diaOperativo, fechaHoraHN, instanteHN, sumarDias } from '@/lib/fecha';
 import { lecturasAbiertas } from '@/lib/inventario';
 import {
-  calcularVigencia, CLAVES_PRECIO, resumenPrecios, UMBRAL_VARIACION_PCT, validarPrecios, vigenciaDe,
+  calcularVigencia, CLAVES_PRECIO, preciosVigentesEn, resumenPrecios, UMBRAL_VARIACION_PCT, validarPrecios, vigenciaDe,
   type ClavePrecio, type ModoVigencia, type Precios,
 } from '@/lib/precios';
 import * as XLSX from 'xlsx';
@@ -23,7 +23,7 @@ import * as XLSX from 'xlsx';
 const aTexto = (p: Precios) => ({ super: p.super.toFixed(2), regular: p.regular.toFixed(2), diesel: p.diesel.toFixed(2) });
 const NOMBRE: Record<ClavePrecio, string> = { super: 'Súper', regular: 'Regular', diesel: 'Diésel' };
 
-interface Pendiente { precios: Precios; vigenteDesde: string; requiereConfirmacion: boolean; variaciones: Record<ClavePrecio, number | null> }
+interface Pendiente { precios: Precios; anteriores: Precios; vigenteDesde: string; requiereConfirmacion: boolean; variaciones: Record<ClavePrecio, number | null> }
 
 export default function PreciosScreen() {
   const { currentPrices, setCurrentPrices, priceHistory, precioActual, precioProximo, addAuditEntry, roles, readings } = useApp();
@@ -40,7 +40,12 @@ export default function PreciosScreen() {
   // El borrador sigue al precio vigente cuando cambia (carga inicial, otro equipo, llegada de una vigencia).
   useEffect(() => { setDraft(aTexto(currentPrices)); }, [currentPrices]);
 
-  const validacion = useMemo(() => validarPrecios(draft, currentPrices), [draft, currentPrices]);
+  // La variación (alerta > 15 %) se mide contra el precio que regirá justo antes de la vigencia elegida
+  // (p. ej. otro precio ya programado), no contra el de hoy (TASK-023).
+  const vigenciaSel = calcularVigencia(modo, new Date(), fecha, hora);
+  const isoSel = 'iso' in vigenciaSel ? vigenciaSel.iso : null;
+  const base = useMemo(() => (isoSel ? preciosVigentesEn(priceHistory, isoSel) : null) ?? currentPrices, [isoSel, priceHistory, currentPrices]);
+  const validacion = useMemo(() => validarPrecios(draft, base), [draft, base]);
   const abiertas = lecturasAbiertas(readings);
 
   const prepararGuardado = () => {
@@ -51,7 +56,10 @@ export default function PreciosScreen() {
     const v = calcularVigencia(modo, new Date(), fecha, hora);
     if ('error' in v) { toast.error('Vigencia inválida', v.error); return; }
     setAceptaVariacion(false);
-    setPendiente({ precios: validacion.precios, vigenteDesde: v.iso, requiereConfirmacion: validacion.requiereConfirmacion, variaciones: validacion.variaciones });
+    const anteriores = preciosVigentesEn(priceHistory, v.iso) ?? currentPrices;
+    const val = validarPrecios(draft, anteriores);
+    if (!val.precios) return;
+    setPendiente({ precios: val.precios, anteriores, vigenteDesde: v.iso, requiereConfirmacion: val.requiereConfirmacion, variaciones: val.variaciones });
   };
 
   const confirmar = async () => {
@@ -73,7 +81,7 @@ export default function PreciosScreen() {
       target: 'Súper, Regular, Diésel',
       detail: `Vigente desde ${desde}${grandes.length ? ` · variación > ${UMBRAL_VARIACION_PCT} % confirmada (${grandes.map(k => NOMBRE[k]).join(', ')})` : ''}`,
       icon: 'tag',
-      before: resumenPrecios(currentPrices),
+      before: resumenPrecios(pendiente.anteriores),
       after: resumenPrecios(pendiente.precios),
     }).catch(e => console.warn('Auditoría no registrada:', e));
     toast.success('Precios guardados', `Rigen desde ${desde} para las lecturas que se abran desde entonces.`);
@@ -126,7 +134,7 @@ export default function PreciosScreen() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
         {FUELS.map((f) => {
           const k = f.id as ClavePrecio;
-          const vigente = currentPrices[k];
+          const vigente = base[k];
           const error = validacion.errores[k];
           const variacion = validacion.variaciones[k];
           const nuevo = validacion.precios?.[k] ?? Number(draft[k].replace(',', '.'));
@@ -256,7 +264,7 @@ export default function PreciosScreen() {
                 <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>
                   <span style={{ fontWeight: 700, fontFamily: 'inherit' }}>{NOMBRE[k]}</span>
                   <span style={{ color: grande ? '#b45309' : '#0f172a', fontWeight: grande ? 800 : 600 }}>
-                    L. {currentPrices[k].toFixed(2)} → L. {pendiente.precios[k].toFixed(2)} ({v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)} %`})
+                    L. {pendiente.anteriores[k].toFixed(2)} → L. {pendiente.precios[k].toFixed(2)} ({v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)} %`})
                   </span>
                 </div>
               );

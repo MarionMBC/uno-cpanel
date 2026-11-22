@@ -192,11 +192,26 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   caso('operador cambia inicial de lectura de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 90 }), false);
   caso('operador guarda final de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 150 }), true);
   caso('operador borra lectura de turno', await op(operador, 'DELETE', lr), false);
-  const arq = (email, extra = {}) => ({ shiftId: sid, date: fT, email, cash: 100, card: 0, credits: 0, partialDrops: 0, ...extra });
+  // Arqueo coherente (como calcArqueo): declarado, esperado, diferencia y estado se derivan de los montos.
+  const arq = (email, extra = {}) => {
+    const d = { shiftId: sid, date: fT, email, name: email, expectedSales: 80, cashFund: 20, cash: 100, card: 0, credits: 0, partialDrops: 0, declaredBy: email, declaredAt: '2099-01-01T12:00:00.000Z', ...extra };
+    const r2 = n => Math.round(n * 100) / 100;
+    const expected = r2(d.expectedSales + d.cashFund), declared = r2(d.cash + d.card + d.credits + d.partialDrops), difference = r2(declared - expected);
+    return { expected, declared, difference, status: difference === 0 ? 'conforme' : 'con_diferencia', ...d };
+  };
   caso('bombero (consulta) declara su propio arqueo', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local')), true);
   caso('bombero declara arqueo con fecha distinta a la del turno', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { date: '2099-01-01' })), false);
   caso('bombero declara el arqueo de otro', await op(consulta, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), false);
   caso('bombero se marca recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'consulta@uno.local' })), false);
+  // TASK-023: montos calculados validados en reglas.
+  caso('arqueo con diferencia que no es declarado − esperado', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, { ...arq('consulta@uno.local'), difference: 50, status: 'con_diferencia' }), false);
+  caso('arqueo con declarado que no suma los montos', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, { ...arq('consulta@uno.local'), declared: 500 }), false);
+  caso('arqueo con esperado que no es ventas + fondo', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, { ...arq('consulta@uno.local'), expected: 1 }), false);
+  caso('arqueo conforme con diferencia distinta de 0', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, status: 'conforme' })), false);
+  caso('arqueo con campo desconocido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { hack: 1 })), false);
+  caso('arqueo con monto fuera de rango', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 9e9 })), false);
+  caso('arqueo con ventas negativas', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { expectedSales: -100 })), false);
+  caso('arqueo coherente con decimales (0.1 + 0.2) y diferencia', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 0.1, card: 0.2, notes: 'faltante' })), true);
   caso('arqueo con monto negativo', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: -1 })), false);
   caso('arqueo de no asignado (aunque sea admin)', await op(admin, 'PATCH', `cashCounts/${sid}_extrano@uno.local`, arq('extrano@uno.local')), false);
   caso('operador cierra turno sin liberar el puntero', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'cerrado' }), false);
@@ -222,7 +237,12 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   await owner('PATCH', `shiftReadings/${sid3}_p1-A-1`, { shiftId: sid3, dispenserId: 'p1-A-1', date: fT, initialReading: 100 });
   caso('operador crea lectura de turno en día cerrado', await op(operador, 'PATCH', `shiftReadings/${sid3}_p1-A-2`, { shiftId: sid3, dispenserId: 'p1-A-2', date: fT, initialReading: 100 }), false);
   caso('operador guarda final de turno en día cerrado', await op(operador, 'PATCH', `shiftReadings/${sid3}_p1-A-1`, { shiftId: sid3, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 150 }), false);
-  caso('(prep) admin reabre el día', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso' }), true);
+  // TASK-023: reabrir (hoy o pasado) exige motivo, firma propia y reopenedAt nuevo.
+  caso('admin reabre el día sin motivo', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso' }), false);
+  caso('admin reabre el día con motivo corto', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'x', reopenedBy: 'admin@uno.local', reopenedAt: '2099-01-01T12:00:00.000Z' }), false);
+  caso('admin reabre el día firmando como otro', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'corregir lecturas', reopenedBy: 'operador@uno.local', reopenedAt: '2099-01-01T12:00:00.000Z' }), false);
+  caso('consulta (sin canCloseDay) reabre el día con motivo', await op(consulta, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'corregir lecturas', reopenedBy: 'consulta@uno.local', reopenedAt: '2099-01-01T12:00:00.000Z' }), false);
+  caso('(prep) admin reabre el día', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'corregir lecturas', reopenedBy: 'admin@uno.local', reopenedAt: `2099-01-01T12:00:${String(run % 60).padStart(2, '0')}.000Z` }), true);
   caso('operador abre turno con el día reabierto (turno + lecturas + diaria + puntero, como abrirTurno)', await abrir(operador, sid2, { ...turnoDoc, templateId: `${tpl}B` }, [
     [`shiftReadings/${sid2}_p1-A-1`, { shiftId: sid2, dispenserId: 'p1-A-1', date: fT, initialReading: 150 }],
     [`readings/${fT}_p1-A-9${run % 1000}`, { date: fT, dispenserId: `p1-A-9${run % 1000}`, initialReading: 150, fuelPrice: 34.05, status: 'activo' }],

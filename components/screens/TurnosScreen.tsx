@@ -3,7 +3,7 @@
 // B2–B8 (TASK-019): turnos, asignación de bomberos, lecturas por turno, corte de precio, arqueo y cierre del día.
 // Solo aparece en el menú con settings/operacion.shiftsEnabled.
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { db } from '@/lib/firebase';
 import { useApp } from '@/contexts/AppContext';
@@ -15,6 +15,7 @@ import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import Modal from '@/components/overlays/Modal';
+import ReabrirDiaModal from '@/components/overlays/ReabrirDiaModal';
 import { AsignacionTurno, AuditEntry, CashCount, DailyReading, PlantillaTurno, Shift, ShiftReading } from '@/types';
 import { idLectura, METER_MAX_DEFAULT } from '@/lib/totalizadores';
 import {
@@ -22,6 +23,7 @@ import {
   plantillaVigente, preciosCambiados, rompeCadena, turnoAoa, validarArqueo, validarAsignaciones, ventasPorBombero,
 } from '@/lib/turnos';
 import { abrirTurno, AperturaManguera, cerrarTurno, cortarPrecio, guardarArqueo, refEstado } from '@/lib/turnosDb';
+import { cerrarDiaConMantenimiento } from '@/lib/diaDb';
 import { fmtL, fmtNum } from '@/lib/utils';
 
 const fechaHN = (iso: string) => iso.split('-').reverse().join('/');
@@ -308,9 +310,10 @@ export default function TurnosScreen() {
     if (!puedeCerrar || razonesCierre.length > 0) return;
     setOcupado(true);
     try {
-      await setDoc(doc(db, 'dayStatus', fecha), { date: fecha, status: 'cerrado', closedBy: miCorreo, closedAt: new Date().toISOString() }, { merge: true });
+      // Mangueras en mantenimiento: misma regla que el cierre sin turnos (final = inicial, 0 L).
+      const mant = await cerrarDiaConMantenimiento(fecha, pumps, miCorreo);
       toast.success('Día cerrado', `${fechaHN(fecha)} · todos los turnos cerrados y arqueados.`);
-      await auditar('Cierre del día', fechaHN(fecha), `Con turnos: ${datos.shifts.map(s => s.name).join(', ')}`, { icon: 'lock' });
+      await auditar('Cierre del día', fechaHN(fecha), `Con turnos: ${datos.shifts.map(s => s.name).join(', ')}${mant ? ` · ${mant} manguera(s) en mantenimiento con 0 L` : ''}`, { icon: 'lock' });
     } catch (e) {
       console.error(e);
       toast.error('No se cerró el día', 'Revisa la conexión.');
@@ -318,6 +321,8 @@ export default function TurnosScreen() {
       setOcupado(false);
     }
   };
+
+  const [reabrirFecha, setReabrirFecha] = useState<string | null>(null);
 
   // ─── Excel (B8) ───
   const exportar = () => {
@@ -417,7 +422,9 @@ export default function TurnosScreen() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {diaCerrado ? <Badge tone="success" icon="lock">Día cerrado</Badge> : puedeCerrar && (
+            {diaCerrado && <Badge tone="success" icon="lock">Día cerrado</Badge>}
+            {diaCerrado && puedeCerrar && <Button variant="secondary" size="sm" icon="unlock" onClick={() => setReabrirFecha(fecha)}>Reabrir día</Button>}
+            {!diaCerrado && puedeCerrar && (
               <Button variant="primary" size="sm" icon="lock" disabled={ocupado || razonesCierre.length > 0} onClick={cerrarDia}>Cerrar día</Button>
             )}
             <Button variant="secondary" size="sm" icon="download" onClick={exportar}>Exportar Excel</Button>
@@ -604,6 +611,8 @@ export default function TurnosScreen() {
           </div>
         )}
       </Modal>
+
+      <ReabrirDiaModal fecha={reabrirFecha} onClose={() => setReabrirFecha(null)} />
 
       {/* Modal: corte de precio */}
       <Modal open={!!corte} onClose={() => setCorte(null)} icon="tag" iconTone="warning" title="Corte de precio"

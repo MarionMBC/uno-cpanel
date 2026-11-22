@@ -53,7 +53,7 @@ function TablaGrupos({ titulo, filas }: { titulo: string; filas: TotalGrupo[] })
 }
 
 export default function ReporteMensualScreen() {
-  const { currentPrices, today } = useApp();
+  const { preciosLectura, today } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const toastRef = useRef(toast);
@@ -91,15 +91,15 @@ export default function ReporteMensualScreen() {
   const listo = datos?.mes === mes ? datos : null;
   const lecturas = useMemo(() => listo?.lecturas ?? [], [listo]);
 
-  const porDia = useMemo(() => ventasPorDia(lecturas, dias, currentPrices).map(d => {
+  const porDia = useMemo(() => ventasPorDia(lecturas, dias, preciosLectura).map(d => {
     let estado: EstadoDia;
     if (d.fecha > today) estado = 'futuro';
     else if (listo?.dias[d.fecha]?.status === 'cerrado') estado = 'cerrado';
     else if (d.lecturas === 0) estado = 'sin_lecturas';
     else estado = 'abierto';
     return { ...d, estado };
-  }), [lecturas, dias, currentPrices, today, listo]);
-  const grupos = useMemo(() => totalesPorGrupo(lecturas, currentPrices), [lecturas, currentPrices]);
+  }), [lecturas, dias, preciosLectura, today, listo]);
+  const grupos = useMemo(() => totalesPorGrupo(lecturas, preciosLectura), [lecturas, preciosLectura]);
 
   const transcurridos = porDia.filter(d => d.estado !== 'futuro').length;
   const conPendientes = porDia.filter(d => d.pendientes > 0 && d.estado !== 'futuro').length;

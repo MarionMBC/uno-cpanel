@@ -26,7 +26,7 @@ interface DashboardScreenProps {
 }
 
 export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
-  const { pumps, auditLog, readings, roles, currentPrices, today: hoy } = useApp();
+  const { pumps, auditLog, readings, roles, preciosLectura, today: hoy } = useApp();
   const { user, appUser } = useAuth();
   const toast = useToast();
 
@@ -43,8 +43,8 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
     return () => { vivo = false; };
   }, [dias, hoy]);
   const tendencia = useMemo(
-    () => ventasPorDia([...(pasadas?.desde === dias[0] ? pasadas.lecturas : []), ...readings.filter(r => r.date === hoy)], dias, currentPrices),
-    [pasadas, readings, dias, hoy, currentPrices],
+    () => ventasPorDia([...(pasadas?.desde === dias[0] ? pasadas.lecturas : []), ...readings.filter(r => r.date === hoy)], dias, preciosLectura),
+    [pasadas, readings, dias, hoy, preciosLectura],
   );
 
   const name = appUser?.name || user?.displayName?.split(' ')[0] || 'Usuario';
@@ -55,9 +55,9 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
 
   // Mismo cálculo y redondeo que Lectura final y el Cuadro (calcVenta), una lectura por dispensador.
   const totals = useMemo(() => {
-    const { litros, total } = sumarVentas(lecturasPorDispensador(readings).values(), currentPrices);
+    const { litros, total } = sumarVentas(lecturasPorDispensador(readings).values(), preciosLectura);
     return { lempiras: total, liters: litros, gallons: litros / LITERS_PER_GALLON };
-  }, [readings, currentPrices]);
+  }, [readings, preciosLectura]);
 
   const activePumps = pumps.filter(p => p.isActive);
   const totalActiveDispensers = activePumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status === 'activo'))).length;
@@ -199,7 +199,7 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
             const pumpReadings = [...lecturasPorDispensador(readings).values()].filter(r => r.pumpId === p.id);
             // Mismo cálculo que el Cuadro (calcVenta, precio de la lectura): rollover y redondeo incluidos.
             let liters = 0, lemp = 0;
-            pumpReadings.forEach(r => { const v = calcVenta(r, currentPrices); if (v.estado === 'ok') { liters += v.litros; lemp += v.total; } });
+            pumpReadings.forEach(r => { const v = calcVenta(r, preciosLectura); if (v.estado === 'ok') { liters += v.litros; lemp += v.total; } });
             liters = round(liters, 3); lemp = round(lemp, 2);
             const completed = pumpReadings.filter(r => r.finalReading !== undefined).length;
             

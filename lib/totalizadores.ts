@@ -57,6 +57,15 @@ export interface Cuadro {
 
 export type PreciosPorLitro = Record<string, number>;
 
+/** Lo que identifica cuándo se abrió una lectura: su día y, si la trae, la hora de creación. */
+export type RefPrecio = Partial<Pick<DailyReading, 'date' | 'createdAt'>>;
+/**
+ * Precios de respaldo para lecturas sin fuelPrice (anteriores a A9): tabla fija o función que da los
+ * precios vigentes cuando se abrió cada lectura (TASK-023). Las lecturas con fuelPrice no lo usan.
+ */
+export type PreciosRespaldo = PreciosPorLitro | ((r: RefPrecio) => PreciosPorLitro);
+export const tablaPrecios = (p: PreciosRespaldo, r: RefPrecio = {}): PreciosPorLitro => (typeof p === 'function' ? p(r) : p);
+
 // Redondeo comercial (half-up) robusto a errores binarios: 412.5 × 34.05 = 14045.624999… → 14045.63.
 export const round = (n: number, d: number) => {
   const limpio = Number(n.toFixed(9));
@@ -119,12 +128,12 @@ export function litrosEntre(inicial: number, final: number, rollover = false, me
 /** Litros por encima del tope diario de una manguera (no plausibles). */
 export const excedeTope = (litros: number) => litros > LITROS_MAX_DIA;
 
-export type LecturaVenta = Pick<DailyReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax' | 'tramos'>;
+export type LecturaVenta = Pick<DailyReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax' | 'tramos'> & RefPrecio;
 
 export interface Venta {
   estado: 'ok' | 'pendiente' | 'invalida' | 'mantenimiento';
   litros: number;
-  /** Lempiras por litro: el de la lectura (fijado al abrir) y el vigente solo si falta. */
+  /** Lempiras por litro: el de la lectura (fijado al abrir) y, si falta, el vigente cuando se abrió. */
   precio: number;
   /** round(litros × precio, 2). */
   total: number;
@@ -133,8 +142,8 @@ export interface Venta {
 }
 
 /** Único cálculo de venta de una lectura. Lo usan Lectura final, Dashboard, Cuadro y (luego) Reportes. */
-export function calcVenta(r: LecturaVenta, precios: PreciosPorLitro): Venta {
-  const precio = Number.isFinite(r.fuelPrice) && r.fuelPrice > 0 ? r.fuelPrice : precios[r.fuelId] || 0;
+export function calcVenta(r: LecturaVenta, precios: PreciosRespaldo): Venta {
+  const precio = Number.isFinite(r.fuelPrice) && r.fuelPrice > 0 ? r.fuelPrice : tablaPrecios(precios, r)[r.fuelId] || 0;
   if (r.status === 'mantenimiento') return { estado: 'mantenimiento', litros: 0, precio, total: 0 };
   if (r.finalReading === undefined || r.finalReading === null || Number.isNaN(r.finalReading)) return { estado: 'pendiente', litros: 0, precio, total: 0 };
   const litros = litrosEntre(r.initialReading, r.finalReading, r.rollover === true, r.meterMax ?? METER_MAX_DEFAULT);
@@ -168,7 +177,7 @@ function ventaPorTramos(tramos: { litros: number; precio: number }[], precioBase
 }
 
 /** Suma de ventas válidas (una lectura por dispensador). Dashboard y Lectura final usan esta suma. */
-export function sumarVentas(lecturas: Iterable<LecturaVenta>, precios: PreciosPorLitro): { litros: number; total: number } {
+export function sumarVentas(lecturas: Iterable<LecturaVenta>, precios: PreciosRespaldo): { litros: number; total: number } {
   let litros = 0, total = 0;
   for (const r of lecturas) {
     const v = calcVenta(r, precios);
@@ -211,6 +220,43 @@ export function filasLecturaFinal(pumps: Pump[], readings: DailyReading[]): Fila
   return out;
 }
 
+// ─── Cierre del día: mangueras en mantenimiento ─────────────────────────────
+
+export interface MangueraMant {
+  dispenserId: string; dispenserName: string; face: string; pumpId: string; pumpName: string; fuelId: string; fuelName: string;
+}
+
+/**
+ * Lecturas a escribir al cerrar el día por las mangueras en mantenimiento (misma regla en Lectura final,
+ * Turnos y el cierre de un día pasado reabierto): la de mantenimiento sin final queda con final = inicial
+ * y 0 L; la manguera en mantenimiento sin lectura del día recibe una con inicial = final = su última final
+ * conocida (o 0), para que la continuidad del día siguiente no se rompa. Nunca pisa una final guardada.
+ */
+export function lecturasMantenimientoCierre(p: {
+  fecha: string; diarias: DailyReading[]; enMantenimiento: MangueraMant[];
+  previas: Pick<DailyReading, 'date' | 'dispenserId' | 'finalReading' | 'status'>[]; autor: string; ahora: string;
+}): DailyReading[] {
+  const delDia = lecturasPorDispensador(p.diarias.filter(r => r.date === p.fecha));
+  const cerrar = (r: DailyReading): DailyReading => ({ ...r, finalReading: r.initialReading, liters: 0, gallons: 0, total: 0, closedBy: p.autor, closedAt: p.ahora });
+  const completadas = [...delDia.values()].filter(r => r.status === 'mantenimiento' && (r.finalReading === undefined || r.finalReading === null)).map(cerrar);
+  const nuevas = p.enMantenimiento.filter(m => !delDia.has(m.dispenserId)).map(m => {
+    const previa = finalAnterior(p.previas, m.dispenserId, p.fecha);
+    return cerrar({
+      date: p.fecha, dispenserId: m.dispenserId, dispenserName: m.dispenserName, face: m.face, pumpId: m.pumpId, pumpName: m.pumpName,
+      fuelId: m.fuelId, fuelName: m.fuelName, fuelPrice: 0, initialReading: previa?.valor ?? 0, status: 'mantenimiento',
+      createdBy: p.autor, createdAt: p.ahora, ...(previa ? { previousFinal: previa.valor } : {}),
+    });
+  });
+  return [...completadas, ...nuevas];
+}
+
+/** Mangueras que la configuración actual tiene en mantenimiento (bomba inactiva o dispensador no activo). */
+export function manguerasEnMantenimiento(pumps: Pump[]): MangueraMant[] {
+  return pumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => !p.isActive || d.status !== 'activo').map(d => ({
+    dispenserId: d.id, dispenserName: d.name, face: f.id, pumpId: p.id, pumpName: p.name, fuelId: d.fuel, fuelName: d.fuelName,
+  }))));
+}
+
 // ─── Continuidad (A8) ─────────────────────────────────────────────────────────
 
 /**
@@ -247,7 +293,7 @@ export interface OpcionesCuadro {
   historico?: boolean;
 }
 
-export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: PreciosPorLitro, opts: OpcionesCuadro = {}): Cuadro {
+export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: PreciosRespaldo, opts: OpcionesCuadro = {}): Cuadro {
   const porDispensador = lecturasPorDispensador(readings);
   const productos = new Map<string, ResumenProducto>();
   const usadas = new Set<string>();
@@ -266,7 +312,7 @@ export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: Pr
 
   const fila = (base: Omit<FilaCuadro, 'litros' | 'precio' | 'total' | 'estado'>, r: DailyReading | undefined, forzarMant: boolean): FilaCuadro => {
     let estado: EstadoFila;
-    let litros = 0, precio = precios[base.fuelId] || 0, total = 0;
+    let litros = 0, precio = tablaPrecios(precios)[base.fuelId] || 0, total = 0;
     if (r) {
       const v = calcVenta(r, precios);
       precio = v.precio;

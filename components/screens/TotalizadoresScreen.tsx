@@ -13,6 +13,8 @@ import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
+import ReabrirDiaModal from '@/components/overlays/ReabrirDiaModal';
+import { cerrarDiaConMantenimiento } from '@/lib/diaDb';
 import { DailyReading, DayStatus } from '@/types';
 import { buildCuadro, cuadroAoa, FilaCuadro } from '@/lib/totalizadores';
 import { fmtL, fmtNum } from '@/lib/utils';
@@ -33,7 +35,7 @@ function EstadoBadge({ f }: { f: FilaCuadro }) {
 }
 
 export default function TotalizadoresScreen() {
-  const { pumps, readings, currentPrices, dayData, roles, today, addAuditEntry } = useApp();
+  const { pumps, readings, preciosLectura, dayData, roles, today, addAuditEntry, operacion } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   // El value de ToastProvider cambia en cada render: usarlo vía ref evita relanzar la carga.
@@ -81,10 +83,33 @@ export default function TotalizadoresScreen() {
   const dia = esHoy ? dayData : otroListo?.dia ?? null;
 
   // Fechas pasadas: filas desde las lecturas de esa fecha, no desde la configuración actual de bombas.
-  const cuadro = useMemo(() => buildCuadro(pumps, lecturas, currentPrices, { historico: !esHoy }), [pumps, lecturas, currentPrices, esHoy]);
+  const cuadro = useMemo(() => buildCuadro(pumps, lecturas, preciosLectura, { historico: !esHoy }), [pumps, lecturas, preciosLectura, esHoy]);
 
   const diaCerrado = dia?.status === 'cerrado';
-  const puedeEditar = roles.find(r => r.id === appUser?.roleId)?.permissions?.canCloseDay === true && !diaCerrado && !cargando && !errorCarga;
+  const puedeCerrarDia = roles.find(r => r.id === appUser?.roleId)?.permissions?.canCloseDay === true;
+  const puedeEditar = puedeCerrarDia && !diaCerrado && !cargando && !errorCarga;
+  // Día pasado reabierto (TASK-023): se vuelve a cerrar aquí sin turnos; con turnos, desde Turnos (B7).
+  const recerrable = !esHoy && !cargando && !errorCarga && !diaCerrado && !!dia?.reopenedAt && puedeCerrarDia && !operacion.shiftsEnabled;
+  const [reabrir, setReabrir] = useState<string | null>(null);
+  const [cerrandoDia, setCerrandoDia] = useState(false);
+  const cerrarDiaPasado = async () => {
+    if (!recerrable) return;
+    if (cuadro.pendientes > 0 || cuadro.invalidas > 0) { toast.error('Lecturas incompletas', 'Todas las mangueras deben tener una final válida para cerrar el día.'); return; }
+    const f = fecha;
+    setCerrandoDia(true);
+    try {
+      const mant = await cerrarDiaConMantenimiento(f, pumps, appUser?.email || '');
+      toast.success('Día cerrado', `${fechaHN(f)} · total ${fmtL(cuadro.total)}`);
+      setIntento(i => i + 1);
+      addAuditEntry({ action: 'Cierre del día', target: fechaHN(f), detail: `Día reabierto, cerrado de nuevo · total ${fmtL(cuadro.total)}${mant ? ` · ${mant} manguera(s) en mantenimiento con 0 L` : ''}`, icon: 'lock' })
+        .catch(e => console.warn('Auditoría no registrada:', e));
+    } catch (e) {
+      console.error(e);
+      toast.error('No se cerró el día', 'Revisa tu permiso y la conexión.');
+    } finally {
+      setCerrandoDia(false);
+    }
+  };
   const fondoGuardado = dia?.cashFund ?? 0;
   const [fondoTxt, setFondoTxt] = useState<string | null>(null);
   const fondo = fondoTxt !== null ? parseFloat(fondoTxt) || 0 : fondoGuardado;
@@ -141,6 +166,9 @@ export default function TotalizadoresScreen() {
             <div style={{ fontSize: 11, color: '#fbbf24', letterSpacing: 0.6, textTransform: 'uppercase', fontWeight: 700 }}>Cierre de turno · {fechaHN(fecha)}</div>
             <div style={{ fontSize: 22, fontWeight: 800, marginTop: 4, letterSpacing: -0.3 }}>Cuadro de totalizadores</div>
             <div style={{ fontSize: 12.5, color: '#cbd5e1', marginTop: 4 }}>Lectura inicial y final de cada manguera, litros vendidos y total en lempiras.</div>
+            {!esHoy && !diaCerrado && !!dia?.reopenedAt && operacion.shiftsEnabled && (
+              <div style={{ fontSize: 12, color: '#fde68a', marginTop: 6 }}>Día reabierto: con turnos activos se vuelve a cerrar desde Turnos.</div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#cbd5e1', fontWeight: 600 }}>
@@ -154,6 +182,8 @@ export default function TotalizadoresScreen() {
                 style={{ height: 38, borderRadius: 9, border: '1px solid rgba(255,255,255,.2)', background: 'rgba(255,255,255,.08)', color: 'white', padding: '0 10px', fontFamily: 'inherit', fontSize: 13, colorScheme: 'dark' }}
               />
             </label>
+            {diaCerrado && puedeCerrarDia && !cargando && <Button variant="secondary" icon="unlock" onClick={() => setReabrir(fecha)}>Reabrir día</Button>}
+            {recerrable && <Button variant="primary" icon="lock" disabled={cerrandoDia} onClick={cerrarDiaPasado}>Cerrar día</Button>}
             <Button variant="accent" icon="download" onClick={exportar} disabled={cargando || errorCarga}>Exportar Excel</Button>
           </div>
         </div>
@@ -291,6 +321,7 @@ export default function TotalizadoresScreen() {
           )}
         </Card>
       </div>
+      <ReabrirDiaModal fecha={reabrir} onClose={() => setReabrir(null)} onReabierto={() => { if (!esHoy) setIntento(i => i + 1); }} />
     </div>
   );
 }

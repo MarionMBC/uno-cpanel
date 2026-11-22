@@ -36,6 +36,23 @@ export function precioVigente<T extends ConVigencia>(historial: T[], instante: s
   return ordenarPorVigencia(historial).find(p => { const v = vigenciaDe(p); return v !== '' && v <= instante; }) ?? null;
 }
 
+/** Precios (Súper/Regular/Diésel) que rigen en `instante` (ISO), o null si aún no había ninguno. */
+export function preciosVigentesEn<T extends ConVigencia & Precios>(historial: T[], instante: string): Precios | null {
+  const p = precioVigente(historial, instante);
+  return p ? { super: p.super, regular: p.regular, diesel: p.diesel } : null;
+}
+
+/**
+ * Precios con que se abrió una lectura vieja sin fuelPrice (TASK-023): los vigentes en su hora de creación
+ * o, sin hora, al inicio (00:00 Honduras) de su día. Null si no se puede saber (se usa el vigente de hoy).
+ */
+export function preciosDeLectura<T extends ConVigencia & Precios>(historial: T[], r: { date?: string; createdAt?: string }): Precios | null {
+  const creada = r.createdAt ? Date.parse(r.createdAt) : NaN;
+  const instante = Number.isFinite(creada) ? new Date(creada).toISOString()
+    : r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? instanteHN(r.date) : null;
+  return instante ? preciosVigentesEn(historial, instante) : null;
+}
+
 /** Próximo precio programado (vigencia futura más cercana), o null. */
 export function proximoPrecio<T extends ConVigencia>(historial: T[], instante: string): T | null {
   const futuros = ordenarPorVigencia(historial).filter(p => vigenciaDe(p) > instante);

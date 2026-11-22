@@ -117,6 +117,17 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Reabrir un día cerrado (hoy o pasado, TASK-023): con motivo (≥ 5), firmado por quien reabre y con
+    // reopenedAt nuevo (cada reapertura deja su propio registro).
+    function reaperturaValida() {
+      return resource.data.get('status', '') != 'cerrado'
+        || request.resource.data.get('status', '') == 'cerrado'
+        || (request.resource.data.get('reopenReason', '') is string && request.resource.data.get('reopenReason', '').size() >= 5
+            && request.resource.data.get('reopenedBy', '') == email().lower()
+            && request.resource.data.get('reopenedAt', null) is string
+            && request.resource.data.get('reopenedAt', null) != resource.data.get('reopenedAt', null));
+    }
+
     // Día operativo (tanques, pipas, fondo, horómetro, estado).
     // Cambiar el estado (cerrar, reabrir o borrar el campo) exige canCloseDay; con el día cerrado,
     // cualquier cambio exige canCloseDay.
@@ -128,7 +139,7 @@ service cloud.firestore {
         || permiso('canCloseDay')
       );
       allow update: if activo() && (
-        permiso('canCloseDay')
+        (permiso('canCloseDay') && reaperturaValida())
         || (request.resource.data.get('status', null) == resource.data.get('status', null)
             && resource.data.get('status', '') != 'cerrado')
       );
@@ -222,14 +233,31 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Montos del arqueo (TASK-023): campos conocidos, montos en rango (L 0 – 5 000 000; la diferencia ±) y
+    // coherentes con la fórmula de calcArqueo, con tolerancia de redondeo a 2 decimales:
+    // declarado = efectivo + POS + créditos + retiros; esperado = ventas + fondo; diferencia = declarado − esperado.
+    function monto(v) { return v is number && v >= 0 && v <= 5000000; }
+    function casi(a, b) { return math.abs(a - b) <= 0.011; }
+    function arqueoMontosValidos(d) {
+      return d.keys().hasOnly(['shiftId', 'date', 'email', 'name', 'expectedSales', 'cashFund', 'expected', 'cash', 'card', 'credits',
+          'partialDrops', 'declared', 'difference', 'status', 'notes', 'declaredBy', 'declaredAt', 'receivedBy', 'receivedAt',
+          'recalculatedBy', 'recalculatedAt'])
+        && monto(d.cash) && monto(d.card) && monto(d.credits) && monto(d.partialDrops)
+        && monto(d.expectedSales) && monto(d.cashFund) && monto(d.expected) && monto(d.declared)
+        && d.difference is number && d.difference >= -5000000 && d.difference <= 5000000
+        && casi(d.declared, d.cash + d.card + d.credits + d.partialDrops)
+        && casi(d.expected, d.expectedSales + d.cashFund)
+        && casi(d.difference, d.declared - d.expected)
+        && d.status in ['conforme', 'con_diferencia']
+        && (d.status == 'conforme') == (d.difference == 0)
+        && (!('notes' in d) || (d.notes is string && d.notes.size() <= 500));
+    }
+
     // Arqueo por bombero: lo registra quien puede cerrar el día, o el propio bombero asignado al turno
     // (sin marcarlo recibido y solo mientras nadie lo recibió). No se borra.
     function arqueoValido(cashId) {
       return cashId == request.resource.data.shiftId + '_' + request.resource.data.email
-        && request.resource.data.cash is number && request.resource.data.card is number
-        && request.resource.data.credits is number && request.resource.data.partialDrops is number
-        && request.resource.data.cash >= 0 && request.resource.data.card >= 0
-        && request.resource.data.credits >= 0 && request.resource.data.partialDrops >= 0
+        && arqueoMontosValidos(request.resource.data)
         && exists(/databases/$(database)/documents/shifts/$(request.resource.data.shiftId))
         && request.resource.data.email in turno(request.resource.data.shiftId).attendantEmails
         && request.resource.data.date == turno(request.resource.data.shiftId).date

@@ -10,7 +10,7 @@ import { INITIAL_PUMPS, PRICE_HISTORY, FUELS, DEFAULT_DIFERENCIAL_POR_LITRO } fr
 import { useAuth } from '@/contexts/AuthContext';
 import { diaOperativo } from '@/lib/fecha';
 import { idLectura } from '@/lib/totalizadores';
-import { ordenarPorVigencia, precioVigente, proximoPrecio, type Precios } from '@/lib/precios';
+import { ordenarPorVigencia, preciosDeLectura, preciosVigentesEn, precioVigente, proximoPrecio, type Precios } from '@/lib/precios';
 import { armarEntrada, ordenarAuditoria, type AuditInput } from '@/lib/auditoria';
 import { normalizarOperacion, OPERACION_DEFAULT } from '@/lib/turnos';
 
@@ -34,6 +34,8 @@ interface AppContextType {
   precioProximo: FuelPrice | null;
   /** Precio por litro que rige en un instante (Lectura inicial lo toma al confirmar). */
   preciosEn: (instante: Date) => Precios;
+  /** Precios de respaldo para calcVenta: los vigentes cuando se abrió cada lectura vieja sin fuelPrice (TASK-023). */
+  preciosLectura: (r: { date?: string; createdAt?: string }) => Precios;
   /** Registra un precio que rige desde `vigenteDesde` (ISO). No toca lecturas ya abiertas. */
   setCurrentPrices: (p: Precios, vigenteDesde: string) => Promise<void>;
   readings: DailyReading[];
@@ -303,10 +305,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => (precioActual ? { super: precioActual.super, regular: precioActual.regular, diesel: precioActual.diesel } : DEFAULT_PRICES),
     [precioActual],
   );
-  const preciosEn = useCallback((instante: Date): Precios => {
-    const p = precioVigente(priceHistory, instante.toISOString());
-    return p ? { super: p.super, regular: p.regular, diesel: p.diesel } : DEFAULT_PRICES;
-  }, [priceHistory]);
+  const preciosEn = useCallback((instante: Date): Precios => preciosVigentesEn(priceHistory, instante.toISOString()) ?? DEFAULT_PRICES, [priceHistory]);
+  const preciosLectura = useCallback((r: { date?: string; createdAt?: string }): Precios => preciosDeLectura(priceHistory, r) ?? currentPrices, [priceHistory, currentPrices]);
 
   const setCurrentPrices = useCallback(async (p: Precios, vigenteDesde: string) => {
     await addDoc(collection(db, 'prices'), {
@@ -362,7 +362,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dayData, updateDayData,
       auditLog, addAuditEntry,
       priceHistory, addPriceEntry,
-      currentPrices, setCurrentPrices, precioActual, precioProximo, preciosEn,
+      currentPrices, setCurrentPrices, precioActual, precioProximo, preciosEn, preciosLectura,
       readings, saveReadings, createInitialReadings,
       users, roles, saveUser, saveRole,
       operacion,
