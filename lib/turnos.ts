@@ -211,7 +211,7 @@ export function tramosDiarios(previos: TramoVenta[] | undefined, shiftId: string
 
 export type PlanCorreccion =
   | { ok: false; error: string }
-  | { ok: true; venta: VentaTurno; diaria: Pick<DailyReading, 'tramos' | 'finalReading' | 'rollover'> | null };
+  | { ok: true; venta: VentaTurno; diaria: { tramos: TramoVenta[]; finalReading?: number; rollover: boolean } | null };
 
 /**
  * Valida y arma la corrección de la final de una manguera en un turno cerrado.
