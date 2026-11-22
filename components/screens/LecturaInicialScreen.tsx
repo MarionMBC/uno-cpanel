@@ -82,6 +82,8 @@ export default function LecturaInicialScreen() {
     return () => { vivo = false; };
   }, [today]);
   const previaDe = (id: string) => (anteriores?.fecha === today ? anteriores.porDisp[id] ?? null : null);
+  // Sin las finales anteriores no se puede pedir el motivo de continuidad: no se confirma hasta que carguen.
+  const cargandoAnteriores = anteriores?.fecha !== today;
 
   const [draftExists, setDraftExists] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -213,6 +215,10 @@ export default function LecturaInicialScreen() {
   };
 
   const handleConfirmClick = () => {
+    if (cargandoAnteriores) {
+      toast.info('Cargando lecturas anteriores', 'Espera unos segundos para comparar con la final de ayer.');
+      return;
+    }
     const missing = allDisp.filter(d => values[d.id]?.status === 'activo' && values[d.id]?.value === '');
     if (missing.length > 0) {
       toast.error('Lecturas incompletas', `Faltan ${missing.length} dispensadores por registrar.`);
@@ -241,6 +247,7 @@ export default function LecturaInicialScreen() {
   };
 
   const handleConfirm = async () => {
+    if (cargandoAnteriores) return;
     const fecha = today; // día operativo del contexto (hora de Honduras)
     const ahora = new Date().toISOString();
     const autor = appUser?.email || appUser?.name || 'unknown';
@@ -492,7 +499,7 @@ export default function LecturaInicialScreen() {
         <div style={{ display: 'flex', gap: 8 }}>
           {draftExists && <button onClick={() => setConfirmDiscard(true)} disabled={isClosed} style={{ background: '#fef2f2', color: '#ef4444', border: '1px solid #fecaca', padding: '0 16px', borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="trash" size={14}/>Descartar borrador</button>}
           <Button variant="secondary" onClick={saveDraft} disabled={isClosed}>Guardar borrador</Button>
-          <Button variant="primary" icon="check" onClick={handleConfirmClick} disabled={isClosed}>Confirmar lectura inicial</Button>
+          <Button variant="primary" icon="check" onClick={handleConfirmClick} disabled={isClosed || cargandoAnteriores}>{cargandoAnteriores ? 'Cargando lecturas anteriores…' : 'Confirmar lectura inicial'}</Button>
         </div>
       </div>
 
