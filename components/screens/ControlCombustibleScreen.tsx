@@ -95,7 +95,7 @@ function TanqueInput({ f, label, value, onChange, disabled, aviso }: { f: FuelKe
 }
 
 export default function ControlCombustibleScreen() {
-  const { dayData, updateDayData, dayStatus, readings, pumps, currentPrices, today, roles, addAuditEntry } = useApp();
+  const { dayData, updateDayData, dayStatus, readings, pumps, preciosLectura, today, roles, addAuditEntry } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
 
@@ -145,7 +145,7 @@ export default function ControlCombustibleScreen() {
 
   // Litros vendidos por producto: mismo cálculo que el Cuadro de totalizadores (duplicadas, mantenimiento,
   // bombas inactivas y lecturas inválidas se tratan igual en ambas pantallas).
-  const cuadro = useMemo(() => buildCuadro(pumps, readings, currentPrices), [pumps, readings, currentPrices]);
+  const cuadro = useMemo(() => buildCuadro(pumps, readings, preciosLectura), [pumps, readings, preciosLectura]);
   const vendidoL = useMemo(() => Object.fromEntries(cuadro.productos.map(p => [p.fuelId, p.litros])) as Record<string, number>, [cuadro]);
   const pendientesPorProducto = useMemo(() => {
     const m: Record<string, number> = {};

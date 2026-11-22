@@ -1,7 +1,7 @@
 // Agregación de ventas para Dashboard y reportes (A13). Funciones puras: se prueban con `npm test`.
 // Todo sale de las lecturas y de calcVenta (precio de la lectura): mismas cifras que el Cuadro.
 import type { DailyReading } from '../types';
-import { calcVenta, lecturasPorDispensador, round, type PreciosPorLitro } from './totalizadores.ts';
+import { calcVenta, lecturasPorDispensador, round, type PreciosRespaldo } from './totalizadores.ts';
 import { sumarDias } from './fecha.ts';
 
 export interface VentaDia {
@@ -29,7 +29,7 @@ function porDia(readings: DailyReading[]): Map<string, DailyReading[]> {
 }
 
 /** Ventas por día para las fechas dadas (días sin lecturas en 0). */
-export function ventasPorDia(readings: DailyReading[], fechas: string[], precios: PreciosPorLitro): VentaDia[] {
+export function ventasPorDia(readings: DailyReading[], fechas: string[], precios: PreciosRespaldo): VentaDia[] {
   const dias = porDia(readings);
   return fechas.map(fecha => {
     let litros = 0, total = 0, pendientes = 0;
@@ -49,7 +49,7 @@ export interface TotalGrupo { id: string; nombre: string; litros: number; total:
  * Totales por bomba y por producto de un conjunto de lecturas (varios días). Nombre y producto
  * salen de la lectura, no de la configuración actual: una bomba inactiva hoy no borra el mes.
  */
-export function totalesPorGrupo(readings: DailyReading[], precios: PreciosPorLitro): { bombas: TotalGrupo[]; productos: TotalGrupo[]; litros: number; total: number } {
+export function totalesPorGrupo(readings: DailyReading[], precios: PreciosRespaldo): { bombas: TotalGrupo[]; productos: TotalGrupo[]; litros: number; total: number } {
   const bombas = new Map<string, TotalGrupo>();
   const productos = new Map<string, TotalGrupo>();
   const sumar = (m: Map<string, TotalGrupo>, id: string, nombre: string, litros: number, total: number) => {

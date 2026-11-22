@@ -12,6 +12,8 @@ import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
 import Modal from '@/components/overlays/Modal';
+import ReabrirDiaModal from '@/components/overlays/ReabrirDiaModal';
+import { cerrarDiaConMantenimiento } from '@/lib/diaDb';
 import { fmtL, fmtNum } from '@/lib/utils';
 import { LITERS_PER_GALLON } from '@/lib/constants';
 import { DailyReading } from '@/types';
@@ -36,8 +38,8 @@ const msgInvalida = (v: Venta | null) => v?.motivo === 'tope'
     : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
 
 export default function LecturaFinalScreen() {
-  const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles, today, operacion } = useApp();
-  const { appUser } = useAuth();
+  const { pumps, dayStatus, addAuditEntry, readings, saveReadings, preciosLectura, roles, today, operacion } = useApp();
+  const { appUser, user } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [guardando, setGuardando] = useState(false);
@@ -46,7 +48,7 @@ export default function LecturaFinalScreen() {
   const [rollEdits, setRollEdits] = useState<Record<string, boolean>>({});
   const [rolloverPide, setRolloverPide] = useState<Fila | null>(null);
   const [corr, setCorr] = useState<Correccion | null>(null);
-  const [reabrir, setReabrir] = useState<string | null>(null);
+  const [reabrir, setReabrir] = useState<string | null>(null); // fecha del día a reabrir
 
   const role = roles.find(r => r.id === appUser?.roleId);
   const puedeCerrar = role?.permissions?.canCloseDay === true;
@@ -77,10 +79,10 @@ export default function LecturaFinalScreen() {
 
   const ventaDe = (f: Fila): Venta | null => {
     const r = lecturaEditada(f);
-    return r ? calcVenta(r, currentPrices) : null;
+    return r ? calcVenta(r, preciosLectura) : null;
   };
 
-  const venta = sumarVentas(rows.map(lecturaEditada).filter((r): r is DailyReading => !!r), currentPrices);
+  const venta = sumarVentas(rows.map(lecturaEditada).filter((r): r is DailyReading => !!r), preciosLectura);
   const totals = { l: venta.litros, m: venta.total };
   const totalGal = totals.l / LITERS_PER_GALLON;
 
@@ -140,7 +142,7 @@ export default function LecturaFinalScreen() {
       // Ya guardada: no se pisa (cambiarla es una corrección con motivo).
       if (r.finalReading !== undefined) return;
       const e = lecturaEditada(f) as DailyReading;
-      const v = calcVenta(e, currentPrices);
+      const v = calcVenta(e, preciosLectura);
       out.push({
         ...r,
         finalReading: e.finalReading,
@@ -234,16 +236,11 @@ export default function LecturaFinalScreen() {
     if (await turnosImpidenCierre()) { setConfirmOpen(false); return; }
     const finales = prepararFinales(true);
     if (!finales) return;
-    const autor = appUser?.email || appUser?.name || 'unknown';
-    const ahora = new Date().toISOString();
-    // Mantenimiento: la final es la inicial (0 litros).
-    const mant = rows.map(f => lecturaDe.get(f.id)).filter((r): r is DailyReading => !!r && r.status === 'mantenimiento' && r.finalReading === undefined)
-      .map(r => ({ ...r, finalReading: r.initialReading, liters: 0, gallons: 0, total: 0, closedBy: autor, closedAt: ahora }));
     const totalCierre = totals.m;
     try {
       await guardarFinales(finales);
-      if (mant.length > 0) await saveReadings(mant);
-      await updateDayData({ status: 'cerrado', closedBy: autor, closedAt: ahora });
+      // Mantenimiento (final = inicial, 0 L) y estado cerrado en una transacción, misma regla que Turnos.
+      await cerrarDiaConMantenimiento({ fecha: today, hoy: today, pumps, autorEmail: user?.email || '', precios: preciosLectura({ date: today }) });
     } catch (e) {
       console.error(e);
       toast.error('No se cerró el día', 'Revisa la conexión e intenta de nuevo.');
@@ -305,7 +302,7 @@ export default function LecturaFinalScreen() {
         ...(r.previousFinal !== undefined ? { continuityBreak: rompeContinuidad(n, r.previousFinal) } : {}),
       }
       : { ...r, finalReading: n, rollover, ...(rollover ? { meterMax: r.meterMax ?? corr.fila.meterMax } : {}) };
-    const v = calcVenta(nueva, currentPrices);
+    const v = calcVenta(nueva, preciosLectura);
     if (nueva.finalReading !== undefined && v.estado === 'invalida') {
       toast.error('Corrección inválida', msgInvalida(v));
       return;
@@ -344,30 +341,6 @@ export default function LecturaFinalScreen() {
     }
   };
 
-  const confirmarReapertura = async () => {
-    if (reabrir === null || !puedeCerrar) return;
-    const motivo = reabrir.trim();
-    if (motivo.length < MOTIVO_MIN) { toast.error('Falta el motivo', `Escribe el motivo de la reapertura (mínimo ${MOTIVO_MIN} caracteres).`); return; }
-    const autor = appUser?.email || appUser?.name || 'unknown';
-    try {
-      await updateDayData({ status: 'en_proceso', reopenedBy: autor, reopenedAt: new Date().toISOString(), reopenReason: motivo });
-      await addAuditEntry({
-        action: 'Reapertura del día',
-        target: fechaHN(today),
-        detail: 'Día reabierto para corregir lecturas',
-        icon: 'unlock',
-        before: 'cerrado',
-        after: 'en_proceso',
-        reason: motivo,
-      });
-      toast.success('Día reabierto', 'Las lecturas finales se pueden editar de nuevo.');
-      setReabrir(null);
-    } catch (e) {
-      console.error(e);
-      toast.error('No se reabrió', 'Revisa la conexión e intenta de nuevo.');
-    }
-  };
-
   const exportExcel = () => {
     const fecha = fechaHN(today).replace(/\//g, '-');
     const data = rows.map(f => {
@@ -395,7 +368,7 @@ export default function LecturaFinalScreen() {
   };
 
   const botonCierre = (size?: 'sm') => puedeCerrar && (isClosed
-    ? <Button variant="secondary" size={size} icon="unlock" onClick={() => setReabrir('')}>Reabrir día</Button>
+    ? <Button variant="secondary" size={size} icon="unlock" onClick={() => setReabrir(today)}>Reabrir día</Button>
     : <Button variant="primary" size={size} icon="lock" onClick={handleConfirmClick}>Cerrar día</Button>);
 
   return (
@@ -627,22 +600,7 @@ export default function LecturaFinalScreen() {
         )}
       </Modal>
 
-      <Modal
-        open={reabrir !== null}
-        onClose={() => setReabrir(null)}
-        title={`Reabrir el día ${fechaHN(today)}`}
-        subtitle="Vuelve a permitir editar las lecturas finales. El motivo queda en la auditoría."
-        icon="unlock"
-        iconTone="warning"
-        width={460}
-        footer={<>
-          <Button variant="secondary" onClick={() => setReabrir(null)}>Cancelar</Button>
-          <Button variant="primary" icon="unlock" onClick={confirmarReapertura}>Reabrir día</Button>
-        </>}
-      >
-        <TextField label="Motivo (obligatorio)" value={reabrir ?? ''} autoFocus placeholder="Ej.: lectura final de Bomba 02 mal digitada"
-          onChange={val => setReabrir(val)} />
-      </Modal>
+      <ReabrirDiaModal fecha={reabrir} onClose={() => setReabrir(null)} detalle="Vuelve a permitir editar las lecturas finales." />
     </div>
   );
 }
