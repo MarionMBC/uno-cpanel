@@ -18,6 +18,16 @@ Los emuladores guardan en memoria: al reiniciarlos, correr `npm run seed:emu` de
 
 `firebase.emulator.json` usa `firestore.emulator.rules` (abiertas) y nunca se despliega; `firebase.json` es la config de producción.
 
+## Reglas de operación (auditoría TASK-004, tareas 006–021)
+
+- **Acceso**: solo usuarios con ficha activa en `users/{correo}` y correo verificado; permisos por rol (`roles`). Reglas en `firestore.rules`, pruebas por rol con `npm run test:rules` (emulador).
+- **Día operativo** en hora de Honduras (`lib/fecha.ts`), cambia solo a medianoche.
+- **Lecturas**: una por manguera y día (`readings/{fecha}_{dispensador}`); la inicial se precarga con la final anterior (si cambia, motivo); las finales se guardan sin cerrar el día; una final guardada solo se corrige con permiso de cierre y motivo (queda en auditoría con antes → después); vuelta a cero del totalizador con `meterMax` y tope de 20 000 L por manguera y día.
+- **Un solo cálculo de venta** (`calcVenta`, litros × precio de la lectura) en Lectura final, Cuadro y Dashboard.
+- **Inventario**: pipas atómicas y anulables con motivo; apertura precargada con el inventario final de ayer; cuadre de evaporación guardado con alerta si supera 0,5 %.
+- **Bombas**: no se desactivan ni retiran mangueras con lecturas abiertas.
+- **Despliegue**: `npm run build` genera `out/` (export estático) → `firebase deploy --only hosting,firestore:rules`. Functions (`precioOficialSemanal`) requieren plan Blaze y `settings/precios.autoOficial = true`.
+
 ## Precio oficial de referencia (SEN)
 
 Pantalla **Precio del combustible** → "Consultar precio oficial": la Secretaría de Energía fija precios máximos **semanales** (vigentes desde el lunes) solo para Tegucigalpa y San Pedro Sula, en L/galón. El panel lee desde el navegador las notas de Once Noticias y HCH (API pública de WordPress), extrae los precios de Tegucigalpa (`lib/preciosOficiales.ts`), los cruza entre fuentes, enlaza la imagen oficial de sen.hn y suma el **diferencial de Guaimaca** por producto (L/litro, `settings/precios`). "Usar estos precios" solo llena el formulario; si las fuentes no coinciden o el salto supera 15 % exige confirmar que se verificó en la imagen oficial. Nada se aplica solo.

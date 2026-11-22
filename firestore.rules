@@ -76,9 +76,15 @@ service cloud.firestore {
         && (!('finalReading' in request.resource.data) || request.resource.data.finalReading is number);
     }
 
+    // Con la final guardada, nada que cambie la venta se toca sin canCloseDay (corrección con motivo).
     function finalIntacta() {
       return request.resource.data.get('finalReading', null) == resource.data.finalReading
-        && request.resource.data.get('rollover', false) == resource.data.get('rollover', false);
+        && request.resource.data.get('rollover', false) == resource.data.get('rollover', false)
+        && request.resource.data.get('status', null) == resource.data.get('status', null)
+        && request.resource.data.get('fuelPrice', null) == resource.data.get('fuelPrice', null)
+        && request.resource.data.get('meterMax', null) == resource.data.get('meterMax', null)
+        && request.resource.data.get('fuelId', null) == resource.data.get('fuelId', null)
+        && request.resource.data.get('dispenserId', null) == resource.data.get('dispenserId', null);
     }
 
     // Lecturas de totalizadores: cualquier usuario activo registra mientras el día esté abierto;

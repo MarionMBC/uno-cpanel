@@ -120,6 +120,13 @@ caso('consulta modifica lectura de día cerrado', await op(consulta, 'PATCH', `r
 caso('operador firma auditoría con uid ajeno', await op(operador, 'PATCH', `auditLog/falsa_${run}`, { userId: uids['admin@uno.local'], action: 'Cierre del día' }), false);
 caso('operador firma auditoría con su uid y nombre', await op(operador, 'PATCH', `auditLog/propia_${run}`, { userId: uids['operador@uno.local'], userName: 'Operador Uno', action: 'Lectura' }), true);
 caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `auditLog/nombre_${run}`, { userId: uids['operador@uno.local'], userName: 'Marion', action: 'Cierre del día' }), false);
+{ // final guardada: consulta no puede alterar campos de venta
+  const id = `readings/rvr3_${run}`;
+  caso('admin crea lectura con final', await op(admin, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 34.05, status: 'activo' }), true);
+  caso('consulta pone mantenimiento a final guardada', await op(consulta, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 34.05, status: 'mantenimiento' }), false);
+  caso('consulta cambia precio de final guardada', await op(consulta, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 1, status: 'activo' }), false);
+  caso('admin corrige precio de final guardada', await op(admin, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 35, status: 'activo' }), true);
+}
 caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
 caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
 
