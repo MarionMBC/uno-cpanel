@@ -29,7 +29,7 @@ const LECTURAS_PREVIAS = 120;
 const MOTIVO_MIN = 5;
 
 export default function LecturaInicialScreen() {
-  const { pumps, dayStatus, addAuditEntry, readings, createInitialReadings, currentPrices, roles, today } = useApp();
+  const { pumps, dayStatus, addAuditEntry, readings, createInitialReadings, preciosEn, today } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -250,6 +250,7 @@ export default function LecturaInicialScreen() {
     if (cargandoAnteriores) return;
     const fecha = today; // día operativo del contexto (hora de Honduras)
     const ahora = new Date().toISOString();
+    const precios = preciosEn(new Date(ahora));
     const autor = appUser?.email || appUser?.name || 'unknown';
     const newReadings: DailyReading[] = [];
 
@@ -270,7 +271,8 @@ export default function LecturaInicialScreen() {
         pumpName: d.pumpName,
         fuelId: d.fuel,
         fuelName: d.fuelName,
-        fuelPrice: currentPrices[d.fuel as 'super' | 'regular' | 'diesel'] || 0,
+        // Precio vigente en el momento de abrir la lectura; la lectura lo conserva aunque cambie después.
+        fuelPrice: precios[d.fuel as 'super' | 'regular' | 'diesel'] || 0,
         initialReading: inicial,
         status: v.status,
         createdBy: autor,
@@ -293,18 +295,9 @@ export default function LecturaInicialScreen() {
     localStorage.removeItem('lectura_inicial_draft');
     setDraftExists(false);
 
-    const roleName = roles.find(r => r.id === appUser?.roleId)?.name || 'Desconocido';
-    const base = {
-      timestamp: new Date().toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' }),
-      date: new Date().toLocaleDateString('es-HN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-      userId: appUser?.uid || 'unknown',
-      userName: appUser?.name || 'Sistema',
-      userRole: roleName,
-    };
     const creadas = newReadings.filter(r => res.creadas.includes(r.dispenserId));
     if (creadas.length > 0) {
       await addAuditEntry({
-        ...base,
         action: 'Lectura inicial',
         target: `${creadas.length} dispensadores`,
         detail: creadas.map(r => `${r.pumpName} ${r.face}-${r.dispenserName.slice(-1)}: ${r.status === 'mantenimiento' ? 'mant.' : r.initialReading}`).join(' · '),
@@ -313,7 +306,6 @@ export default function LecturaInicialScreen() {
     }
     for (const r of creadas.filter(c => c.continuityBreak)) {
       await addAuditEntry({
-        ...base,
         action: 'Continuidad de totalizador',
         target: `${r.pumpName} ${r.face}-${r.dispenserName.slice(-1)} (${r.fuelName})`,
         detail: `Inicial distinta de la final anterior`,

@@ -14,7 +14,7 @@ import ConfirmDialog from '@/components/overlays/ConfirmDialog';
 import Modal from '@/components/overlays/Modal';
 import { fmtL, fmtNum } from '@/lib/utils';
 import { LITERS_PER_GALLON } from '@/lib/constants';
-import { AuditEntry, DailyReading } from '@/types';
+import { DailyReading } from '@/types';
 import * as XLSX from 'xlsx';
 import {
   calcVenta, excedeTope, FilaFinal, filasLecturaFinal, lecturasPorDispensador, litrosEntre, LITROS_MAX_DIA, METER_RESOLUCION, rompeContinuidad, round, sumarVentas, Venta,
@@ -84,13 +84,6 @@ export default function LecturaFinalScreen() {
   const isClosed = dayStatus === 'cerrado';
   const conFinal = rows.filter(f => { const r = lecturaDe.get(f.id); return r?.status === 'mantenimiento' || r?.finalReading !== undefined; }).length;
 
-  const auditBase = (): Omit<AuditEntry, 'id' | 'action' | 'target' | 'detail' | 'icon'> => ({
-    timestamp: new Date().toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' }),
-    date: new Date().toLocaleDateString('es-HN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-    userId: appUser?.uid || 'unknown',
-    userName: appUser?.name || 'Sistema',
-    userRole: role?.name || 'Desconocido',
-  });
   const etiqueta = (f: Fila) => `${f.pumpName} ${f.face}-${f.name.slice(-1)} (${f.fuelName})`;
 
   /** Valida y arma las finales digitadas. `todas`: exige todas las operables (para cerrar). */
@@ -168,9 +161,7 @@ export default function LecturaFinalScreen() {
   /** Auditoría aparte: si falla, lo guardado sigue guardado (se avisa, no se dice "No se guardó"). */
   const auditarFinales = async (finales: DailyReading[]) => {
     if (finales.length === 0) return;
-    const base = auditBase();
     await addAuditEntry({
-      ...base,
       action: 'Lecturas finales guardadas',
       target: `${finales.length} dispensadores`,
       detail: finales.map(r => `${r.pumpName} ${r.face}-${r.dispenserName.slice(-1)}: ${r.finalReading}${r.rollover ? ' (vuelta a cero)' : ''}`).join(' · '),
@@ -178,7 +169,6 @@ export default function LecturaFinalScreen() {
     });
     for (const r of finales.filter(x => x.rollover)) {
       await addAuditEntry({
-        ...base,
         action: 'Vuelta a cero del totalizador',
         target: `${r.pumpName} ${r.face}-${r.dispenserName.slice(-1)} (${r.fuelName})`,
         detail: `Litros = final + (máximo ${r.meterMax} + 0.001) − inicial = ${r.liters}`,
@@ -243,7 +233,6 @@ export default function LecturaFinalScreen() {
     try {
       await auditarFinales(finales);
       await addAuditEntry({
-        ...auditBase(),
         action: 'Cierre del día',
         target: fechaHN(today),
         detail: `Total ${fmtL(totalCierre)}`,
@@ -318,7 +307,6 @@ export default function LecturaFinalScreen() {
     setCorr(null);
     try {
       await addAuditEntry({
-        ...auditBase(),
         action: `Corrección de lectura ${campo}`,
         target: etiqueta(fila),
         detail: `${fechaHN(r.date)}${isClosed ? ' · día cerrado' : ''}${campo === 'final' && rollover !== (r.rollover === true) ? (rollover ? ' · marcada vuelta a cero' : ' · quitada vuelta a cero') : ''}`,
@@ -341,7 +329,6 @@ export default function LecturaFinalScreen() {
     try {
       await updateDayData({ status: 'en_proceso', reopenedBy: autor, reopenedAt: new Date().toISOString(), reopenReason: motivo });
       await addAuditEntry({
-        ...auditBase(),
         action: 'Reapertura del día',
         target: fechaHN(today),
         detail: 'Día reabierto para corregir lecturas',

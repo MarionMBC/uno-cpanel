@@ -10,12 +10,13 @@ import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import Modal from '@/components/overlays/Modal';
-import { DayStatus, FuelReceipt } from '@/types';
+import { DayStatus, FuelReceipt, TankCuadre } from '@/types';
 import { arrayUnion, deleteField, doc, getDoc, increment, runTransaction } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { buildCuadro } from '@/lib/totalizadores';
 import { FUELS } from '@/lib/constants';
 import { fmtNum } from '@/lib/utils';
+import { fechaCortaHN } from '@/lib/fecha';
 import {
   TABLAS, ANOMALIAS, TanqueId, TablaCalibracion, galonesDesdePulgadas, cuadreTanque, maxPulgadas, esAnomalia, LITROS_POR_GALON, galonesPipa,
 } from '@/lib/calibracion';
@@ -155,16 +156,9 @@ export default function ControlCombustibleScreen() {
     return m;
   }, [cuadro]);
 
-  const auditar = (action: string, target: string, detail: string, icon: string) => {
-    const ahora = new Date();
-    addAuditEntry({
-      timestamp: ahora.toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' }),
-      date: ahora.toLocaleDateString('es-HN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-      userId: appUser?.uid || 'unknown',
-      userName: autor,
-      userRole: rol?.name || 'Desconocido',
-      action, target, detail, icon,
-    }).catch(() => { /* la auditoría no bloquea la operación */ });
+  const auditar = (action: string, target: string, detail: string, icon: string, extra: { before?: string; after?: string; reason?: string } = {}) => {
+    addAuditEntry({ action, target, detail, icon, ...extra })
+      .catch(e => console.warn('Auditoría no registrada:', e)); // la auditoría no bloquea la operación
   };
 
   const guardar = async (campo: 'initial' | 'final', valores: Record<FuelKey, string>) => {
@@ -193,7 +187,7 @@ export default function ControlCombustibleScreen() {
             cuadreTanque({ inicialGal, recibidoGal: recibidoTanque(dayData?.receipts, f, tk), vendidoL: vendidoL[f] || 0, finalGal: gal }),
             { provisional: (pendientesPorProducto[f] || 0) > 0, savedAt, savedBy: autor },
           );
-          entry.cuadre = c;
+          entry.cuadre = { ...c, desactualizado: false }; // merge profundo: limpiar la marca de una anulación previa
           if (c.alerta) alertas.push(`${NOMBRE[f]} ${fmtNum(c.porcentaje ?? 0, 2)} %`);
         } else {
           entry.cuadre = deleteField();
@@ -207,8 +201,18 @@ export default function ControlCombustibleScreen() {
       return;
     }
     const horoCampo = campo === 'initial' ? 'horometerInitial' : 'horometerFinal';
+    // Antes → después en galones por tanque, para la auditoría.
+    const galTxt = (src: Record<FuelKey, number | undefined>) => TANQUES.map(f => `${NOMBRE[f]} ${src[f] === undefined ? '—' : fmtNum(src[f] as number, 2)} gal`).join(' · ');
+    const antes = Object.fromEntries(TANQUES.map(f => [f, dayData?.tanks?.[f]?.[`${campo}Gallons`]])) as Record<FuelKey, number | undefined>;
+    const despues = Object.fromEntries(TANQUES.map(f => [f, valores[f].trim() === '' ? undefined : aGalones(f, valores[f]).gal ?? undefined])) as Record<FuelKey, number | undefined>;
     try {
       await updateDayData({ tanks, [horoCampo]: horo.trim() === '' ? deleteField() : parseFloat(horo) } as unknown as Partial<DayStatus>);
+      const cuadres = campo === 'final'
+        ? TANQUES.map(f => { const c = (tanks[f].cuadre as TankCuadre | undefined); return c && typeof c.porcentaje !== 'undefined' ? `${NOMBRE[f]} ${c.porcentaje === null ? '—' : `${fmtNum(c.porcentaje, 2)} %`}${c.provisional ? ' (provisional)' : ''}` : null; }).filter(Boolean).join(' · ')
+        : '';
+      auditar(campo === 'initial' ? 'Varillas iniciales' : 'Varillas finales y cuadre', fechaCortaHN(today),
+        `${campo === 'final' && cuadres ? `Cuadre: ${cuadres}` : 'Inventario de tanques'}${horo.trim() !== '' ? ` · horómetro ${horo.trim()} h` : ''}`,
+        'droplet', { before: galTxt(antes), after: galTxt(despues) });
       (campo === 'initial' ? tocIni : tocFin).current.clear();
       tocHoro.current.delete(campo === 'initial' ? 'ini' : 'fin');
       toast.success(campo === 'initial' ? 'Apertura guardada' : 'Cierre guardado',
@@ -275,7 +279,12 @@ export default function ControlCombustibleScreen() {
         const nueva = lista.map(r => r.id === actual.id
           ? { ...r, voided: true, voidReason: razon, voidedBy: autor, voidedAt: new Date().toISOString() }
           : r);
-        tx.set(ref, { receipts: nueva, tanks: { [actual.fuelId]: { refueledGallons: totalPipas(nueva, actual.fuelId) } } }, { merge: true });
+        // El cuadre guardado se calculó con esta pipa: queda marcado para volver a cuadrar.
+        const cuadrePrevio = (snap.data()?.tanks?.[actual.fuelId]?.cuadre) as TankCuadre | undefined;
+        tx.set(ref, { receipts: nueva, tanks: { [actual.fuelId]: {
+          refueledGallons: totalPipas(nueva, actual.fuelId),
+          ...(cuadrePrevio ? { cuadre: { desactualizado: true } } : {}),
+        } } }, { merge: true });
         return actual;
       });
       auditar('Anulación pipa', rec.fuelName, `${fmtNum(galonesPipa(rec), 2)} gal · factura ${rec.invoice || 'S/N'} · motivo: ${razon}`, 'trash');
@@ -473,7 +482,7 @@ export default function ControlCombustibleScreen() {
                     </div>
                     <div style={{ fontSize: 11.5, color: guardado ? '#475569' : '#94a3b8' }}>
                       {guardado
-                        ? `Cuadre guardado ${new Date(guardado.savedAt).toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' })} por ${guardado.savedBy}: ${guardado.diferenciaGal > 0 ? '+' : guardado.diferenciaGal < 0 ? '−' : ''}${fmtNum(Math.abs(guardado.diferenciaGal), 2)} gal${guardado.porcentaje !== null ? ` (${fmtNum(guardado.porcentaje, 2)} %)` : ''}${guardado.provisional ? ' · provisional' : ''}`
+                        ? `Cuadre guardado ${new Date(guardado.savedAt).toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' })} por ${guardado.savedBy}: ${guardado.diferenciaGal > 0 ? '+' : guardado.diferenciaGal < 0 ? '−' : ''}${fmtNum(Math.abs(guardado.diferenciaGal), 2)} gal${guardado.porcentaje !== null ? ` (${fmtNum(guardado.porcentaje, 2)} %)` : ''}${guardado.provisional ? ' · provisional' : ''}${guardado.desactualizado ? ' · DESACTUALIZADO: se anuló una pipa, vuelva a «Guardar y Cuadrar»' : ''}`
                         : 'Cuadre sin guardar.'}
                     </div>
                   </div>
