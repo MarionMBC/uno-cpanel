@@ -8,8 +8,9 @@ import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import { fmtL, fmtNum, getDayOfWeekEs, getMonthEs } from '@/lib/utils';
-import { LITERS_PER_GALLON } from '@/lib/constants';
+import { LITERS_PER_GALLON, productosDeBomba } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
+import { lecturasPorDispensador, sumarVentas } from '@/lib/totalizadores';
 
 const TREND_14D = (() => {
   const arr = [];
@@ -28,7 +29,7 @@ interface DashboardScreenProps {
 }
 
 export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
-  const { pumps, auditLog, dayStatus, readings, roles } = useApp();
+  const { pumps, auditLog, dayStatus, readings, roles, currentPrices } = useApp();
   const { user, appUser } = useAuth();
 
   const name = appUser?.name || user?.displayName?.split(' ')[0] || 'Usuario';
@@ -37,17 +38,11 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
   const today = new Date();
   const todayLabel = `${getDayOfWeekEs(today)} · ${today.getDate()} de ${getMonthEs(today)}, ${today.getFullYear()}`;
 
+  // Mismo cálculo y redondeo que Lectura final y el Cuadro (calcVenta), una lectura por dispensador.
   const totals = useMemo(() => {
-    let l = 0; let m = 0;
-    readings.forEach(r => {
-      if (r.finalReading !== undefined) {
-        const liters = Math.max(0, r.finalReading - r.initialReading);
-        l += liters;
-        m += liters * r.fuelPrice;
-      }
-    });
-    return { lempiras: m, liters: l, gallons: l / LITERS_PER_GALLON };
-  }, [readings]);
+    const { litros, total } = sumarVentas(lecturasPorDispensador(readings).values(), currentPrices);
+    return { lempiras: total, liters: litros, gallons: litros / LITERS_PER_GALLON };
+  }, [readings, currentPrices]);
 
   const activePumps = pumps.filter(p => p.isActive);
   const totalActiveDispensers = activePumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status === 'activo'))).length;
@@ -180,12 +175,12 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
               <Card key={p.id} hoverable>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 9, background: p.fuel.color + '22', color: p.fuel.color, display: 'grid', placeItems: 'center' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 9, background: '#fbbf2422', color: '#d97706', display: 'grid', placeItems: 'center' }}>
                       <Icon name="fuel" size={18}/>
                     </div>
                     <div>
                       <div style={{ fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{p.name}</div>
-                      <div style={{ fontSize: 11, color: '#64748b' }}>{p.fuel.name} · L. {p.fuel.price.toFixed(2)}/L</div>
+                      <div style={{ fontSize: 11, color: '#64748b' }}>{productosDeBomba(p).map(f => f.name).join(' / ')}</div>
                     </div>
                   </div>
                   {p.isActive

@@ -42,6 +42,7 @@ function caso(nombre, status, esperaPermitido) {
 
 const hoy = new Date().toISOString().split('T')[0];
 const run = Date.now();
+const futuro = '2099-12-31'; // las pruebas no escriben en el día operativo real
 const admin = await token('admin@uno.local');
 const operador = await token('operador@uno.local');
 const inactivo = await token('inactivo@uno.local');
@@ -58,9 +59,9 @@ caso('sin ficha lee ficha ajena', await op(extrano, 'GET', 'users/admin@uno.loca
 caso('inactivo lee su propia ficha', await op(inactivo, 'GET', 'users/inactivo@uno.local'), true);
 // CA2: operador
 caso('operador lee pumps', await op(operador, 'GET', 'pumps/p1'), true);
-caso('operador registra lectura', await op(operador, 'PATCH', `readings/test_op_${hoy}`, { date: hoy, initialReading: 100, finalReading: 110 }), true);
-caso('operador lectura no numérica', await op(operador, 'PATCH', `readings/test_op2_${hoy}`, { date: hoy, initialReading: 'cien' }), false);
-caso('operador borra lectura', await op(operador, 'DELETE', `readings/test_op_${hoy}`), false);
+caso('operador registra lectura', await op(operador, 'PATCH', `readings/test_op_${futuro}`, { date: futuro, initialReading: 100, finalReading: 110 }), true);
+caso('operador lectura no numérica', await op(operador, 'PATCH', `readings/test_op2_${futuro}`, { date: futuro, initialReading: 'cien' }), false);
+caso('operador borra lectura', await op(operador, 'DELETE', `readings/test_op_${futuro}`), false);
 caso('operador guarda fondo del día', await op(operador, 'PATCH', `dayStatus/${hoy}`, { cashFund: 1500 }), true);
 caso('operador edita precios', await op(operador, 'PATCH', 'prices/op_test', { super: 1 }), false);
 caso('operador edita bombas', await op(operador, 'PATCH', 'pumps/p1', { name: 'X' }), false);
@@ -79,6 +80,21 @@ caso('colección desconocida', await op(admin, 'GET', 'secretos/x'), false);
 
 // Review r1 de TASK-006
 const consulta = await token('consulta@uno.local');
+caso('consulta (sin canCloseDay) cambia inicial ya registrada', await op(consulta, 'PATCH', `readings/test_op_${futuro}`, { date: futuro, initialReading: 50, finalReading: 110 }), false);
+// TASK-010: una final ya guardada solo la cambia quien tiene canCloseDay (corrección con motivo).
+const fin = `test_fin_${run}_${futuro}`;
+caso('operador abre lectura sin final', await op(operador, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100 }), true);
+caso('consulta guarda final en lectura sin final', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 120 }), true);
+caso('consulta reescribe la misma final (sin cambio)', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 120 }), true);
+caso('consulta (sin canCloseDay) cambia final ya guardada', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 130 }), false);
+caso('consulta marca vuelta a cero con final guardada', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 120, rollover: true }), false);
+{ // borrar el campo finalReading
+  const r = await fetch(`${FS}/readings/${fin}?updateMask.fieldPaths=finalReading`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${consulta}` }, body: JSON.stringify({ fields: {} }) });
+  caso('consulta borra final ya guardada', r.status, false);
+}
+caso('admin (canCloseDay) corrige final ya guardada', await op(admin, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 130 }), true);
+{ const st = await op(operador, 'GET', 'prices_official/2026-11-23'); caso('operador lee sugerencia oficial (404 = permitido sin doc)', st === 404 ? 200 : st, true); }
+caso('admin escribe sugerencia oficial desde cliente', await op(admin, 'PATCH', 'prices_official/x', { a: 1 }), false);
 caso('operador lee ficha ajena', await op(operador, 'GET', 'users/admin@uno.local'), false);
 // Robo de ficha: el admin crea la ficha de alguien que aún no entró; un tercero se registra con ese correo sin verificar.
 const robo = `robo${run}@uno.local`;
@@ -104,6 +120,13 @@ caso('consulta modifica lectura de día cerrado', await op(consulta, 'PATCH', `r
 caso('operador firma auditoría con uid ajeno', await op(operador, 'PATCH', `auditLog/falsa_${run}`, { userId: uids['admin@uno.local'], action: 'Cierre del día' }), false);
 caso('operador firma auditoría con su uid y nombre', await op(operador, 'PATCH', `auditLog/propia_${run}`, { userId: uids['operador@uno.local'], userName: 'Operador Uno', action: 'Lectura' }), true);
 caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `auditLog/nombre_${run}`, { userId: uids['operador@uno.local'], userName: 'Marion', action: 'Cierre del día' }), false);
+{ // final guardada: consulta no puede alterar campos de venta
+  const id = `readings/rvr3_${run}`;
+  caso('admin crea lectura con final', await op(admin, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 34.05, status: 'activo' }), true);
+  caso('consulta pone mantenimiento a final guardada', await op(consulta, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 34.05, status: 'mantenimiento' }), false);
+  caso('consulta cambia precio de final guardada', await op(consulta, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 1, status: 'activo' }), false);
+  caso('admin corrige precio de final guardada', await op(admin, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 35, status: 'activo' }), true);
+}
 caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
 caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
 

@@ -10,9 +10,11 @@ import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import { useToast } from '@/contexts/ToastContext';
 import { fmtNum } from '@/lib/utils';
+import { DEFAULT_DIFERENCIAL_POR_LITRO } from '@/lib/constants';
 import {
   extraerPrecios, notaCompleta, diferencias, porLitro, esNotaDePrecios, PreciosNota,
 } from '@/lib/preciosOficiales';
+import SugerenciaSemanal, { SugerenciaOficial } from './SugerenciaSemanal';
 
 type Clave = 'super' | 'regular' | 'diesel';
 const PRODUCTOS: { id: Clave; nombre: string; color: string }[] = [
@@ -67,7 +69,8 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState('');
   const [res, setRes] = useState<Resultado | null>(null);
-  const [dif, setDif] = useState<Record<Clave, string>>({ super: '0', regular: '0', diesel: '0' });
+  const DIF_DEF = { super: String(DEFAULT_DIFERENCIAL_POR_LITRO.super), regular: String(DEFAULT_DIFERENCIAL_POR_LITRO.regular), diesel: String(DEFAULT_DIFERENCIAL_POR_LITRO.diesel) };
+  const [dif, setDif] = useState<Record<Clave, string>>(DIF_DEF);
   const [difGuardado, setDifGuardado] = useState<Record<Clave, string> | null>(null);
   const [verificado, setVerificado] = useState(false);
 
@@ -114,6 +117,20 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
     }
   };
 
+  // La sugerencia automática entra por el mismo camino que una consulta manual (misma verificación).
+  const usarSugerencia = (s: SugerenciaOficial) => {
+    setError('');
+    setVerificado(false);
+    setRes({
+      lecturas: s.fuentes.map(f => ({
+        medio: f.medio, link: f.url ?? '', fecha: s.vigencia,
+        precios: { porGalon: { ...s.porGalon, kerosene: null }, vigencia: s.vigencia },
+      })),
+      coinciden: s.coinciden,
+      sen: s.senImagen ? { date: s.senImagen.fecha, source_url: s.senImagen.url } : null,
+    });
+  };
+
   const base = res?.lecturas[0]?.precios;
   const difValido = (p: Clave) => { const n = parseFloat(dif[p] || '0'); return Number.isFinite(n) && n >= DIF_MIN && n <= DIF_MAX; };
   const sugerido = (p: Clave) => {
@@ -130,7 +147,7 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
   const todosValidos = PRODUCTOS.every(p => sugerido(p.id) != null);
   const hayDudas = res?.coinciden !== true || PRODUCTOS.some(p => Math.abs(salto(p.id) ?? 0) > SALTO_ALERTA);
   const puedeUsar = puedeEditar && todosValidos && (!hayDudas || verificado);
-  const difCambiado = JSON.stringify(dif) !== JSON.stringify(difGuardado ?? { super: '0', regular: '0', diesel: '0' });
+  const difCambiado = JSON.stringify(dif) !== JSON.stringify(difGuardado ?? DIF_DEF);
 
   const guardarDif = async () => {
     if (!PRODUCTOS.every(p => difValido(p.id))) {
@@ -167,6 +184,7 @@ export default function PrecioOficialCard({ onUsar, puedeEditar, vigentes }: { o
       </div>
 
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <SugerenciaSemanal onUsar={usarSugerencia}/>
         {error && (
           <div role="alert" style={{ padding: '10px 14px', borderRadius: 10, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 13 }}>
             {error} <a href={SEN_HISTORICO} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700 }}>sen.hn</a>

@@ -17,6 +17,8 @@ export interface Dispenser {
   status: 'activo' | 'mantenimiento' | 'inactivo';
   serialNumber?: string;
   observations?: string;
+  /** Valor máximo del totalizador antes de volver a cero (L). Default METER_MAX_DEFAULT = 999999.999. */
+  meterMax?: number;
 }
 
 export interface PumpFace {
@@ -53,6 +55,16 @@ export interface DailyReading {
   createdAt?: string;
   closedBy?: string;
   closedAt?: string;
+  /** El totalizador dio la vuelta a cero entre inicial y final: litros = final + meterMax − inicial. */
+  rollover?: boolean;
+  /** meterMax usado en el cálculo del rollover (copiado del dispensador al marcarlo). */
+  meterMax?: number;
+  /** La inicial difiere de la final anterior del mismo dispensador. */
+  continuityBreak?: boolean;
+  /** Final anterior (fecha previa) contra la que se comparó la inicial. */
+  previousFinal?: number;
+  /** Motivo de la diferencia de continuidad. */
+  continuityReason?: string;
 }
 
 export interface FuelReceipt {
@@ -67,6 +79,30 @@ export interface FuelReceipt {
   invoice?: string;
   plate?: string;
   timestamp: string;
+  /** Quien registró la pipa (nombre o correo). */
+  createdBy?: string;
+  /** Anulada: no suma al recibido; se conserva para auditoría. */
+  voided?: boolean;
+  voidReason?: string;
+  voidedBy?: string;
+  voidedAt?: string;
+}
+
+/** Resultado del cuadre guardado al "Guardar y Cuadrar" (galones, salvo diferenciaL). */
+export interface TankCuadre {
+  inicialGal: number;
+  recibidoGal: number;
+  vendidoGal: number;
+  teoricoGal: number;
+  finalGal: number;
+  diferenciaGal: number;
+  diferenciaL: number;
+  porcentaje: number | null;
+  /** |porcentaje| > 0,5 %. */
+  alerta: boolean;
+  provisional: boolean;
+  savedAt: string;
+  savedBy: string;
 }
 
 export interface DayStatus {
@@ -74,6 +110,9 @@ export interface DayStatus {
   status: 'pendiente' | 'en_proceso' | 'cerrado';
   closedBy?: string;
   closedAt?: string;
+  reopenedBy?: string;
+  reopenedAt?: string;
+  reopenReason?: string;
   horometerInitial?: number;
   horometerFinal?: number;
   tanks?: {
@@ -91,6 +130,8 @@ export interface DayStatus {
       /** Inventario en galones (de la tabla, o digitado si el tanque no tiene tabla). */
       initialGallons?: number;
       finalGallons?: number;
+      /** Cuadre del día guardado al cerrar el inventario. */
+      cuadre?: TankCuadre;
     }
   };
   receipts?: FuelReceipt[];
@@ -118,6 +159,12 @@ export interface AuditEntry {
   target: string;
   detail: string;
   icon: string;
+  /** Valor anterior (correcciones, reaperturas, continuidad). */
+  before?: string | number;
+  /** Valor nuevo. */
+  after?: string | number;
+  /** Motivo obligatorio en correcciones y reaperturas. */
+  reason?: string;
 }
 
 export interface RolePermissions {

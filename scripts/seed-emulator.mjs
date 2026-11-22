@@ -114,7 +114,7 @@ function buildPumps() {
 }
 
 async function main() {
-  const today = new Date().toISOString().split('T')[0]; // misma convención que AppContext
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Tegucigalpa' }).format(new Date()); // día operativo HN (lib/fecha.ts)
   const pricePerLiter = Object.fromEntries(Object.values(FUELS).map(f => [f.id, f.pricePerLiter]));
 
   await ensureAuthUser(SEED_USER);
@@ -160,6 +160,19 @@ async function main() {
     receipts: [
       { id: 'rec-seed-1', fuelId: 'super', fuelName: 'Súper', amount: 3785.41, gallons: 1000, invoice: '001-001-01-00017456', plate: 'C 123456', driver: 'Conductor de prueba', timestamp: new Date().toISOString() },
     ],
+  });
+
+  // Día anterior cerrado: su varilla final precarga la apertura de hoy (Súper difiere a propósito: 38 vs 38.25 pulg).
+  const [ay, am, ad] = today.split('-').map(Number);
+  const yesterday = new Date(Date.UTC(ay, am - 1, ad - 1)).toISOString().slice(0, 10);
+  await setDoc(`dayStatus/${yesterday}`, {
+    date: yesterday,
+    status: 'cerrado',
+    tanks: {
+      diesel: { finalInches: 45.5, finalGallons: 3362 },
+      super: { finalInches: 38, finalGallons: 2753 },
+      regular: { finalGallons: 2800 },
+    },
   });
 
   for (const [key, initial] of Object.entries(INITIAL)) {

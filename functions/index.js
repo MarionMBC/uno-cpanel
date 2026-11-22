@@ -1,32 +1,33 @@
-/**
- * Import function triggers from their respective submodules:
- *
- * const {onCall} = require("firebase-functions/v2/https");
- * const {onDocumentWritten} = require("firebase-functions/v2/firestore");
- *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
- */
+"use strict";
+// Cloud Functions del panel UNO Guaimaca.
 
-const {setGlobalOptions} = require("firebase-functions");
-const {onRequest} = require("firebase-functions/https");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
 const logger = require("firebase-functions/logger");
+const {initializeApp} = require("firebase-admin/app");
+const {getFirestore, FieldValue} = require("firebase-admin/firestore");
+const {ejecutar} = require("./precioOficial");
 
-// For cost control, you can set the maximum number of containers that can be
-// running at the same time. This helps mitigate the impact of unexpected
-// traffic spikes by instead downgrading performance. This limit is a
-// per-function limit. You can override the limit for each function using the
-// `maxInstances` option in the function's options, e.g.
-// `onRequest({ maxInstances: 5 }, (req, res) => { ... })`.
-// NOTE: setGlobalOptions does not apply to functions using the v1 API. V1
-// functions should each use functions.runWith({ maxInstances: 10 }) instead.
-// In the v1 API, each function can only serve one request per container, so
-// this will be the maximum concurrent request count.
-setGlobalOptions({ maxInstances: 10 });
+initializeApp();
 
-// Create and deploy your first functions
-// https://firebase.google.com/docs/functions/get-started
-
-// exports.helloWorld = onRequest((request, response) => {
-//   logger.info("Hello logs!", {structuredData: true});
-//   response.send("Hello from Firebase!");
-// });
+// Sugerencia semanal del precio oficial (TASK-020). Corre vie, sáb, dom y lun
+// a las 05/11/17/23 h de Tegucigalpa (16 invocaciones/semana, tope de diseño
+// 30); el lunes solo trabaja la de las 05:00. Apagada salvo
+// settings/precios.autoOficial === true. Nunca toca `prices`.
+exports.precioOficialSemanal = onSchedule({
+  schedule: "0 5,11,17,23 * * 0,1,5,6",
+  timeZone: "America/Tegucigalpa",
+  region: "us-central1",
+  timeoutSeconds: 60,
+  memory: "256MiB",
+  maxInstances: 1,
+  retryCount: 0,
+}, async () => {
+  const r = await ejecutar({
+    db: getFirestore(),
+    fetchFn: fetch,
+    ahora: new Date(),
+    serverTs: FieldValue.serverTimestamp(),
+    logger,
+  });
+  logger.info("precioOficialSemanal", r);
+});

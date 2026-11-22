@@ -11,7 +11,7 @@ import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import { fmtL, fmtNum, getMonthEs } from '@/lib/utils';
-import { LITERS_PER_GALLON } from '@/lib/constants';
+import { LITERS_PER_GALLON, productosDeBomba } from '@/lib/constants';
 import { DailyReading } from '@/types';
 import * as XLSX from 'xlsx';
 
@@ -84,15 +84,19 @@ export default function ReporteMensualScreen() {
   const byPump = useMemo(() => activePumps.map(p => {
     const pumpReads = monthlyReadings.filter(r => r.pumpId === p.id);
     let lts = 0;
+    let lemp = 0;
+    // Cada manguera puede ser de otro producto: se usa el precio por litro de su lectura.
     pumpReads.forEach(r => {
       if (r.finalReading !== undefined) {
-        lts += Math.max(0, r.finalReading - r.initialReading);
+        const l = Math.max(0, r.finalReading - r.initialReading);
+        lts += l;
+        lemp += l * r.fuelPrice;
       }
     });
     return {
       pump: p,
       liters: lts,
-      lemp: lts * p.fuel.price,
+      lemp,
     };
   }), [activePumps, monthlyReadings]);
 
@@ -189,7 +193,7 @@ export default function ReporteMensualScreen() {
             {byPump.map((b) => (
               <tr key={b.pump.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                 <td style={{ padding: '12px 14px', fontWeight: 700, color: '#0f172a' }}>{b.pump.name}</td>
-                <td style={{ padding: '12px 14px' }}><Badge tone="neutral" dot>{b.pump.fuel.name}</Badge></td>
+                <td style={{ padding: '12px 14px' }}><Badge tone="neutral" dot>{productosDeBomba(b.pump).map(f => f.name).join(' / ')}</Badge></td>
                 <td style={{ padding: '12px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 700 }}>{fmtNum(b.liters, 2)}</td>
                 <td style={{ padding: '12px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: '#475569' }}>{fmtNum(b.liters / LITERS_PER_GALLON, 2)}</td>
                 <td style={{ padding: '12px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 800, color: '#0f172a' }}>{fmtL(b.lemp)}</td>

@@ -14,11 +14,12 @@ import Modal from '@/components/overlays/Modal';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
 import { FUELS } from '@/lib/constants';
 import { Pump, Dispenser } from '@/types';
+import { abiertasDeBomba, abiertaDeDispensador } from '@/lib/inventario';
 
 interface DispDraft { name: string; sn: string; status: 'activo' | 'inactivo' | 'mantenimiento'; fuelId: string; }
 
 export default function BombasScreen() {
-  const { pumps, setPumps, addAuditEntry, roles } = useApp();
+  const { pumps, setPumps, addAuditEntry, roles, readings } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const [picked, setPicked] = useState(pumps[0]?.id || '');
@@ -36,7 +37,23 @@ export default function BombasScreen() {
 
   if (!pump) return <div style={{ padding: 24 }}>No hay bombas configuradas.</div>;
 
+  // Con lecturas abiertas (inicial sin final) del día operativo, la bomba o el dispensador no se
+  // puede sacar de operación: sus ventas quedarían fuera del cierre, del Cuadro y de los reportes.
+  const abiertasBomba = abiertasDeBomba(readings, pump.id);
+  const bloqueoBomba = () => {
+    if (abiertasBomba.length === 0) return false;
+    toast.error(`${pump.name} tiene lecturas abiertas`,
+      `${abiertasBomba.length} manguera${abiertasBomba.length > 1 ? 's' : ''} con lectura inicial sin final hoy. Registre la lectura final antes de desactivarla.`);
+    return true;
+  };
+  const bloqueoDispensador = (id: string, nombre: string, accion: string) => {
+    if (!abiertaDeDispensador(readings, id)) return false;
+    toast.error(`${nombre} tiene lectura abierta`, `Tiene lectura inicial sin final hoy. Registre la lectura final antes de ${accion}.`);
+    return true;
+  };
+
   const toggleActive = () => {
+    if (pump.isActive && bloqueoBomba()) return;
     setPumps(pumps.map(p => p.id === pump.id ? { ...p, isActive: !p.isActive } : p));
     toast.success(`${pump.name} ${pump.isActive ? 'desactivada' : 'activada'}`);
   };
@@ -97,6 +114,12 @@ export default function BombasScreen() {
   const updateDispenser = () => {
     if (!editDispenser) return;
     const selectedFuel = FUELS.find(f => f.id === dispDraft.fuelId) || FUELS[0];
+    const actual = pump.faces.find(f => f.id === editDispenser.face)?.dispensers.find(d => d.id === editDispenser.id);
+    // Sacarlo de operación o cambiarle el combustible con la lectura abierta descuadra el día.
+    const sacaDeOperacion = actual?.status === 'activo' && dispDraft.status !== 'activo';
+    const cambiaCombustible = !!actual && actual.fuel !== selectedFuel.id;
+    if ((sacaDeOperacion || cambiaCombustible) && actual
+      && bloqueoDispensador(actual.id, actual.name, sacaDeOperacion ? 'cambiarle el estado' : 'cambiarle el combustible')) return;
     setPumps(pumps.map(p => p.id === pump.id ? {
       ...p,
       faces: p.faces.map(f => f.id === editDispenser.face ? {
@@ -141,6 +164,7 @@ export default function BombasScreen() {
 
   const deleteDispenser = () => {
     if (!confirmDelDisp) return;
+    if (bloqueoDispensador(confirmDelDisp.id, confirmDelDisp.name, 'eliminarlo')) return;
     setPumps(pumps.map(p => p.id === pump.id ? {
       ...p,
       faces: p.faces.map(f => f.id === confirmDelDisp.face ? {
@@ -222,8 +246,13 @@ export default function BombasScreen() {
               </button>
               <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{pump.isActive ? 'Bomba activa' : 'Bomba inactiva'}</span>
             </div>
+            {abiertasBomba.length > 0 && (
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#b45309', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Icon name="alert" size={13}/>{abiertasBomba.length} lectura{abiertasBomba.length > 1 ? 's' : ''} abierta{abiertasBomba.length > 1 ? 's' : ''} hoy: no se puede desactivar ni retirar mangueras
+              </span>
+            )}
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button variant="danger" icon="trash" onClick={() => setConfirmDeactivate(true)}>Desactivar</Button>
+              <Button variant="danger" icon="trash" onClick={() => { if (!bloqueoBomba()) setConfirmDeactivate(true); }}>Desactivar</Button>
               <Button variant="primary" icon="check" onClick={saveChanges}>Guardar cambios</Button>
             </div>
           </div>
@@ -255,6 +284,7 @@ export default function BombasScreen() {
                       </div>
                       <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'ui-monospace, monospace' }}>SN-{d.id.toUpperCase().slice(0, 8)}</div>
                     </div>
+                    {abiertaDeDispensador(readings, d.id) && <Badge tone="info" size="sm">Lectura abierta</Badge>}
                     {d.status === 'mantenimiento'
                       ? <Badge tone="warning" icon="wrench" size="sm">Mantenim.</Badge>
                       : <Badge tone="success" dot size="sm">Activo</Badge>}
@@ -264,7 +294,7 @@ export default function BombasScreen() {
                     }} style={{ width: 26, height: 26, borderRadius: 6, border: 0, background: 'white', boxShadow: '0 0 0 1px #e2e8f0', cursor: 'pointer', color: '#475569', display: 'grid', placeItems: 'center' }}>
                       <Icon name="edit" size={12}/>
                     </button>
-                    <button onClick={() => setConfirmDelDisp({ face: face.id, id: d.id, name: d.name })} style={{ width: 26, height: 26, borderRadius: 6, border: 0, background: 'white', boxShadow: '0 0 0 1px #fecaca', cursor: 'pointer', color: '#dc2626', display: 'grid', placeItems: 'center' }}>
+                    <button onClick={() => { if (!bloqueoDispensador(d.id, d.name, 'eliminarlo')) setConfirmDelDisp({ face: face.id, id: d.id, name: d.name }); }} style={{ width: 26, height: 26, borderRadius: 6, border: 0, background: 'white', boxShadow: '0 0 0 1px #fecaca', cursor: 'pointer', color: '#dc2626', display: 'grid', placeItems: 'center' }}>
                       <Icon name="trash" size={12}/>
                     </button>
                   </div>
@@ -417,6 +447,7 @@ export default function BombasScreen() {
         cancelLabel="Mantener activa"
         icon="alert" tone="danger"
         onConfirm={() => {
+          if (bloqueoBomba()) return;
           setPumps(pumps.map(p => p.id === pump.id ? { ...p, isActive: false } : p));
           toast.warning(`${pump.name} desactivada`, 'Ya no aparecerá en las lecturas diarias.');
         }}

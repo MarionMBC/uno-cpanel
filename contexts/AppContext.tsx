@@ -3,14 +3,15 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import {
   collection, doc, setDoc, addDoc, writeBatch,
-  onSnapshot, query, orderBy, getDocs, where
+  onSnapshot, query, orderBy, getDocs, where, runTransaction
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole } from '@/types';
-import { INITIAL_PUMPS, PRICE_HISTORY } from '@/lib/constants';
+import { INITIAL_PUMPS, PRICE_HISTORY, FUELS, DEFAULT_DIFERENCIAL_POR_LITRO } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
+import { diaOperativo } from '@/lib/fecha';
+import { idLectura } from '@/lib/totalizadores';
 
-const todayDoc = new Date().toISOString().split('T')[0];
 
 interface AppContextType {
   pumps: Pump[];
@@ -24,7 +25,13 @@ interface AppContextType {
   currentPrices: { super: number; regular: number; diesel: number };
   setCurrentPrices: (p: { super: number; regular: number; diesel: number }) => Promise<void>;
   readings: DailyReading[];
+  /** Actualiza lecturas existentes (merge). Sin `id` usa el ID determinista `{fecha}_{dispenserId}`. */
   saveReadings: (readings: DailyReading[]) => Promise<void>;
+  /**
+   * Crea lecturas iniciales con ID determinista en una transacción: si ya existe la de ese
+   * dispensador y fecha no se pisa. Devuelve los dispenserId creados y los que ya existían.
+   */
+  createInitialReadings: (readings: DailyReading[]) => Promise<{ creadas: string[]; existentes: string[] }>;
   loading: boolean;
   /** Fecha ISO (YYYY-MM-DD) del día operativo que escucha el contexto. */
   today: string;
@@ -38,7 +45,11 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | null>(null);
 
-const DEFAULT_PRICES = { super: 108.42, regular: 102.18, diesel: 96.74 };
+// Datos a escribir de una lectura: sin `id` (va en la ruta) ni campos undefined (Firestore los rechaza).
+const datosLectura = (r: DailyReading) => Object.fromEntries(Object.entries(r).filter(([k, v]) => k !== 'id' && v !== undefined));
+
+// Precio por litro de respaldo mientras carga el historial (mismos valores que la semilla).
+const DEFAULT_PRICES = Object.fromEntries(FUELS.map(f => [f.id, f.price])) as { super: number; regular: number; diesel: number };
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [pumps, setPumpsState] = useState<Pump[]>([]);
@@ -55,6 +66,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Las reglas de Firestore solo permiten leer/escribir con sesión y ficha activa:
   // la siembra y las suscripciones arrancan cuando hay un usuario autorizado.
   const autorizado = !!appUser && appUser.status === 'activo';
+
+  // Día operativo en hora de Honduras; se revisa cada minuto para cambiar de día sin recargar.
+  const [todayDoc, setTodayDoc] = useState(() => diaOperativo());
+  useEffect(() => {
+    const t = setInterval(() => setTodayDoc(d => { const n = diaOperativo(); return n === d ? d : n; }), 60000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!authLoading && !autorizado) {
@@ -87,9 +105,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (PRICE_HISTORY as FuelPrice[]).forEach((p, i) => {
           const { id: _id, ...rest } = p as FuelPrice & { id?: string };
           // add a fake timestamp to seed data to allow sorting
-          batch.set(doc(db, 'prices', `seed_${i}`), { ...rest, timestamp: new Date('2026-04-20').getTime() - i * 86400000 });
+          batch.set(doc(db, 'prices', `seed_${i}`), { ...rest, timestamp: Date.now() - i * 1000 }); // fecha real de alta: nunca en el futuro (el vigente es el más reciente)
         });
         await batch.commit();
+      }
+
+      const settingsSnap = await getDocs(collection(db, 'settings'));
+      if (settingsSnap.empty) {
+        await setDoc(doc(db, 'settings', 'precios'), { diferencialPorLitro: { ...DEFAULT_DIFERENCIAL_POR_LITRO } });
       }
 
       const rolesSnap = await getDocs(collection(db, 'roles'));
@@ -223,14 +246,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setDayStatus = useCallback(async (s: DayStatusValue) => {
     await setDoc(doc(db, 'dayStatus', todayDoc), { status: s }, { merge: true });
-  }, []);
+  }, [todayDoc]);
 
   const updateDayData = useCallback(async (data: Partial<DayStatus>) => {
     await setDoc(doc(db, 'dayStatus', todayDoc), { date: todayDoc, ...data }, { merge: true });
-  }, []);
+  }, [todayDoc]);
 
   const addAuditEntry = useCallback(async (entry: Omit<AuditEntry, 'id'>) => {
-    await addDoc(collection(db, 'auditLog'), entry);
+    // Firestore rechaza campos undefined (before/after/reason son opcionales).
+    const limpio = Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined));
+    await addDoc(collection(db, 'auditLog'), limpio);
   }, []);
 
   const addPriceEntry = useCallback(async (entry: FuelPrice) => {
@@ -247,12 +272,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const saveReadings = useCallback(async (newReadings: DailyReading[]) => {
     const batch = writeBatch(db);
     newReadings.forEach(reading => {
-      const docRef = reading.id ? doc(db, 'readings', reading.id) : doc(collection(db, 'readings'));
-      const { id, ...data } = reading;
-      const cleanData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== undefined));
-      batch.set(docRef, cleanData, { merge: true });
+      const docRef = doc(db, 'readings', reading.id || idLectura(reading.date, reading.dispenserId));
+      batch.set(docRef, datosLectura(reading), { merge: true });
     });
     await batch.commit();
+  }, []);
+
+  const createInitialReadings = useCallback(async (newReadings: DailyReading[]) => {
+    return runTransaction(db, async tx => {
+      const refs = newReadings.map(r => doc(db, 'readings', idLectura(r.date, r.dispenserId)));
+      // Todas las lecturas de la transacción van antes de cualquier escritura.
+      const snaps = await Promise.all(refs.map(ref => tx.get(ref)));
+      const creadas: string[] = [];
+      const existentes: string[] = [];
+      newReadings.forEach((r, i) => {
+        if (snaps[i].exists()) { existentes.push(r.dispenserId); return; }
+        tx.set(refs[i], datosLectura(r));
+        creadas.push(r.dispenserId);
+      });
+      return { creadas, existentes };
+    });
   }, []);
 
   const saveUser = useCallback(async (user: AppUser) => {
@@ -275,7 +314,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       auditLog, addAuditEntry,
       priceHistory, addPriceEntry,
       currentPrices, setCurrentPrices,
-      readings, saveReadings,
+      readings, saveReadings, createInitialReadings,
       users, roles, saveUser, saveRole,
       loading,
       today: todayDoc,
