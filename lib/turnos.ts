@@ -207,6 +207,57 @@ export function tramosDiarios(previos: TramoVenta[] | undefined, shiftId: string
   return [...otros, ...venta.tramos.filter(t => t.estado === 'ok').map(t => ({ litros: t.litros, precio: t.precio, shiftId }))];
 }
 
+// ─── TASK-022 corrección de una final con el turno cerrado ───────────────────
+
+export type PlanCorreccion =
+  | { ok: false; error: string }
+  | { ok: true; venta: VentaTurno; diaria: Pick<DailyReading, 'tramos' | 'finalReading' | 'rollover'> | null };
+
+/**
+ * Valida y arma la corrección de la final de una manguera en un turno cerrado.
+ * - La nueva final debe dar venta válida (≥ inicial o último corte, o vuelta a cero).
+ * - Continuidad: si el turno siguiente abrió esta manguera con inicial = final vieja, se bloquea. Ese turno
+ *   arrancó del valor viejo: corregir solo este haría que la venta del día deje de cuadrar con el totalizador.
+ *   Si el siguiente ya había marcado la diferencia (continuityBreak), la corrección justamente la cierra.
+ * - La diaria reemplaza los tramos de este turno; su final se mueve solo si era la final vieja (último cierre).
+ * - Si la diaria cuadraba y con la corrección deja de cuadrar, se bloquea.
+ */
+export function planCorreccion(p: {
+  sr: Parameters<typeof tramosLectura>[0] & Pick<ShiftReading, 'shiftId'>;
+  nuevaFinal: number; rollover: boolean;
+  diaria: (LecturaVenta & Pick<DailyReading, 'initialReading'>) | null;
+  siguiente: { nombre: string; initialReading: number } | null;
+  precios: PreciosPorLitro;
+}): PlanCorreccion {
+  const vieja = p.sr.finalReading;
+  if (vieja === undefined || vieja === null) return { ok: false, error: 'Esta manguera aún no tiene final en el turno.' };
+  if (!Number.isFinite(p.nuevaFinal) || p.nuevaFinal < 0) return { ok: false, error: 'La nueva final debe ser un número mayor o igual a cero.' };
+  if (round(p.nuevaFinal, 3) === round(vieja, 3) && p.rollover === (p.sr.rollover === true)) return { ok: false, error: 'La nueva final es igual a la guardada.' };
+  const venta = calcVentaTurno({ ...p.sr, finalReading: p.nuevaFinal, rollover: p.rollover }, p.precios);
+  if (venta.estado !== 'ok') {
+    return { ok: false, error: venta.tramos.some(t => t.motivo === 'tope') ? 'La nueva final da más litros de los posibles en un día. Revísala.' : 'La nueva final queda menor a la inicial o al último corte. Revísala o marca vuelta a cero.' };
+  }
+  if (p.siguiente && round(p.siguiente.initialReading, 3) === round(vieja, 3)) {
+    return { ok: false, error: `El turno ${p.siguiente.nombre} ya abrió esta manguera con inicial ${vieja} (la final que quieres corregir). Corregir solo este turno descuadraría la venta del día contra el totalizador; la venta total del día ya es correcta.` };
+  }
+  if (!p.diaria) return { ok: true, venta, diaria: null };
+  const tramos = tramosDiarios(p.diaria.tramos, p.sr.shiftId, venta);
+  const esUltimo = p.diaria.finalReading !== undefined && round(p.diaria.finalReading, 3) === round(vieja, 3);
+  const finalReading = esUltimo ? p.nuevaFinal : p.diaria.finalReading;
+  // La diaria cubre menos de una vuelta del totalizador: dio la vuelta si la final quedó bajo la inicial.
+  const rollover = esUltimo ? (finalReading as number) < p.diaria.initialReading : p.diaria.rollover === true;
+  const nueva = { ...p.diaria, tramos, finalReading, rollover };
+  if (calcVenta(p.diaria, p.precios).estado === 'ok' && calcVenta(nueva, p.precios).estado !== 'ok') {
+    return { ok: false, error: 'Con esta corrección la venta del día deja de cuadrar con el totalizador. Revisa la final.' };
+  }
+  return { ok: true, venta, diaria: { tramos, finalReading, rollover } };
+}
+
+/** Arqueo con el esperado recalculado (lo declarado no cambia). */
+export function recalcularArqueo(c: Pick<CashCount, 'cashFund' | 'cash' | 'card' | 'credits' | 'partialDrops'>, expectedSales: number): Pick<CashCount, 'expectedSales' | 'expected' | 'declared' | 'difference' | 'status'> {
+  return { expectedSales: round(expectedSales, 2), ...calcArqueo(expectedSales, c.cashFund, c) };
+}
+
 export interface VentaBombero {
   email: string;
   name: string;

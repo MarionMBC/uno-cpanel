@@ -308,6 +308,10 @@ export interface ShiftReading {
   continuityBreak?: boolean;
   continuityReason?: string;
   cuts?: CorteLectura[];
+  /** Corrección de la final con el turno cerrado (TASK-022): quién, cuándo y motivo (antes/después en la auditoría). */
+  correctedBy?: string;
+  correctedAt?: string;
+  correctionReason?: string;
 }
 
 /** cashCounts/{shiftId}_{bomberoEmail} */
@@ -337,4 +341,7 @@ export interface CashCount {
   /** Recibido/validado por quien puede cerrar el día: el turno queda arqueado. */
   receivedBy?: string;
   receivedAt?: string;
+  /** Esperado recalculado por una corrección de final (TASK-022); si estaba recibido, hay que volver a recibirlo. */
+  recalculatedBy?: string;
+  recalculatedAt?: string;
 }

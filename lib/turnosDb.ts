@@ -1,9 +1,9 @@
 // Escrituras de turnos (TASK-019). Transacciones para que apertura, cierre y traspaso sean atómicos.
-import { collection, doc, getDocs, query, runTransaction, setDoc, where, arrayUnion, type Transaction } from 'firebase/firestore';
+import { collection, deleteField, doc, getDocs, query, runTransaction, setDoc, where, arrayUnion, type Transaction } from 'firebase/firestore';
 import { db } from './firebase';
 import type { AsignacionTurno, CashCount, CortePrecio, DailyReading, Operacion, Shift, ShiftReading } from '@/types';
 import { idLectura, round, type PreciosPorLitro } from './totalizadores';
-import { bloqueoCierreDia, calcVentaTurno, idArqueo, idLecturaTurno, idTurno, tramosDiarios } from './turnos';
+import { bloqueoCierreDia, calcVentaTurno, idArqueo, idLecturaTurno, idTurno, planCorreccion, recalcularArqueo, tramosDiarios, ventasPorBombero } from './turnos';
 
 const limpio = <T extends object>(o: T) => Object.fromEntries(Object.entries(o).filter(([k, v]) => k !== 'id' && v !== undefined));
 
@@ -151,6 +151,72 @@ export async function cortarPrecio(p: { shift: Shift; cortes: { dispenserId: str
     });
     const corte: CortePrecio = { at: ahora, by: p.autor.email, oldPrices: s.data().prices as Record<string, number>, newPrices: p.newPrices };
     tx.update(sref, { prices: p.newPrices, priceCuts: arrayUnion(corte) });
+  });
+}
+
+export interface ResultadoCorreccion { antes: number; arqueo: 'recalculado' | 'recepcion_anulada' | null; finalDiaria: boolean }
+
+/**
+ * TASK-022: corrige la final de una manguera en un turno cerrado (canCloseDay, día abierto o reabierto, motivo).
+ * Relee todo en la transacción: lectura del turno, diaria, turno siguiente y arqueo del bombero. La diaria
+ * reemplaza los tramos del turno (y su final si era la de este turno). El arqueo del bombero se recalcula;
+ * si ya estaba recibido, se quita la recepción para que quien cierra el día lo vuelva a recibir.
+ */
+export async function corregirFinalTurno(p: {
+  shiftId: string; dispenserId: string; finalReading: number; rollover: boolean; motivo: string; precios: PreciosPorLitro; autor: Autor;
+}): Promise<ResultadoCorreccion> {
+  const motivo = p.motivo.trim();
+  if (motivo.length < 5) throw new Error('Escribe el motivo de la corrección (mínimo 5 letras).');
+  // El SDK no consulta dentro de una transacción: el turno siguiente se busca antes y el puntero, releído
+  // adentro, delata si se abrió otro turno entretanto.
+  const sig = await getDocs(query(collection(db, 'shifts'), where('prevShiftId', '==', p.shiftId)));
+  const siguiente = sig.empty ? null : ({ id: sig.docs[0].id, ...sig.docs[0].data() } as Shift);
+  const ahora = new Date().toISOString();
+  return runTransaction(db, async tx => {
+    const s = await tx.get(doc(db, 'shifts', p.shiftId));
+    if (!s.exists() || s.data().status !== 'cerrado') throw new Error('Solo se corrige la final de un turno cerrado.');
+    const shift = { id: s.id, ...s.data() } as Shift;
+    await exigirDiaAbierto(tx, shift.date);
+    const est = await tx.get(refEstado());
+    const e = est.exists() ? est.data() : {};
+    const esElUltimo = (e.openShiftId ?? null) === null && e.lastShiftId === p.shiftId;
+    if (!esElUltimo && !siguiente) throw new Error('Se abrió otro turno mientras corregías. Vuelve a intentarlo.');
+    const lref = doc(db, 'shiftReadings', idLecturaTurno(p.shiftId, p.dispenserId));
+    const l = await tx.get(lref);
+    if (!l.exists()) throw new Error('No existe la lectura del turno para esa manguera.');
+    const sr = l.data() as ShiftReading;
+    const sl = siguiente ? await tx.get(doc(db, 'shiftReadings', idLecturaTurno(siguiente.id as string, p.dispenserId))) : null;
+    const dref = doc(db, 'readings', idLectura(shift.date, p.dispenserId));
+    const d = await tx.get(dref);
+    const asign = shift.assignments.find(a => a.dispenserIds.includes(p.dispenserId));
+    const cref = asign ? doc(db, 'cashCounts', idArqueo(p.shiftId, asign.email)) : null;
+    const c = cref ? await tx.get(cref) : null;
+    const otras = asign && c?.exists()
+      ? await Promise.all(asign.dispenserIds.filter(x => x !== p.dispenserId).map(x => tx.get(doc(db, 'shiftReadings', idLecturaTurno(p.shiftId, x)))))
+      : [];
+
+    const plan = planCorreccion({
+      sr, nuevaFinal: p.finalReading, rollover: p.rollover, precios: p.precios,
+      diaria: d.exists() ? (d.data() as DailyReading) : null,
+      siguiente: sl?.exists() ? { nombre: siguiente?.name ?? 'siguiente', initialReading: (sl.data() as ShiftReading).initialReading } : null,
+    });
+    if (!plan.ok) throw new Error(plan.error);
+
+    tx.update(lref, { finalReading: p.finalReading, rollover: p.rollover, correctedBy: p.autor.email, correctedAt: ahora, correctionReason: motivo });
+    if (plan.diaria) tx.update(dref, { tramos: plan.diaria.tramos, finalReading: plan.diaria.finalReading, rollover: plan.diaria.rollover });
+    let arqueo: ResultadoCorreccion['arqueo'] = null;
+    if (asign && cref && c?.exists()) {
+      const cc = c.data() as CashCount;
+      const lecturas = [{ ...sr, finalReading: p.finalReading, rollover: p.rollover }, ...otras.filter(x => x.exists()).map(x => x.data() as ShiftReading)];
+      const venta = ventasPorBombero({ assignments: [asign] }, lecturas, p.precios)[0];
+      const recibido = !!cc.receivedBy;
+      tx.update(cref, {
+        ...recalcularArqueo(cc, venta.total), recalculatedBy: p.autor.email, recalculatedAt: ahora,
+        ...(recibido ? { receivedBy: deleteField(), receivedAt: deleteField() } : {}),
+      });
+      arqueo = recibido ? 'recepcion_anulada' : 'recalculado';
+    }
+    return { antes: sr.finalReading as number, arqueo, finalDiaria: !!plan.diaria && plan.diaria.finalReading === p.finalReading };
   });
 }
 

@@ -199,7 +199,21 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Lecturas por turno: solo mientras el turno está abierto; la inicial y la manguera no cambian.
+    // TASK-022: con el turno cerrado solo se corrige la final ya guardada (y su vuelta a cero), con motivo
+    // y firmada por quien corrige; nada más del documento cambia. Antes/después quedan en la auditoría.
+    function correccionTurnoCerrado() {
+      return 'finalReading' in resource.data
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['finalReading', 'rollover', 'correctedBy', 'correctedAt', 'correctionReason'])
+        && request.resource.data.finalReading is number && request.resource.data.finalReading >= 0
+        && request.resource.data.get('rollover', false) is bool
+        && request.resource.data.correctionReason is string && request.resource.data.correctionReason.size() >= 5
+        && request.resource.data.correctedBy == email().lower()
+        && request.resource.data.correctedAt is string;
+    }
+
+    // Lecturas por turno: con el turno abierto (la inicial y la manguera no cambian) o, cerrado, solo la
+    // corrección de la final. Nunca con el día cerrado.
     match /shiftReadings/{readingId} {
       allow read: if activo();
       allow create: if permiso('canCloseDay')
@@ -217,7 +231,8 @@ service cloud.firestore {
         && request.resource.data.date == resource.data.date
         && request.resource.data.initialReading == resource.data.initialReading
         && numOpcional(request.resource.data, 'finalReading')
-        && turno(resource.data.shiftId).status == 'abierto'
+        && (turno(resource.data.shiftId).status == 'abierto'
+            || (turno(resource.data.shiftId).status == 'cerrado' && correccionTurnoCerrado()))
         && !diaCerrado(resource.data.date);
       allow delete: if false;
     }

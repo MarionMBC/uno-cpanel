@@ -204,6 +204,16 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   caso('operador cierra turno (turno + puntero en una transacción)', await cerrarT(operador, sid, turnoDoc), true);
   caso('operador modifica turno cerrado', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'abierto' }), false);
   caso('operador cambia final con turno cerrado', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 160 }), false);
+  // TASK-022: corrección de la final con el turno cerrado (canCloseDay, motivo, firma propia, solo esos campos).
+  const corrT = (extra = {}) => ({ finalReading: 160, correctedBy: 'operador@uno.local', correctedAt: '2099-01-01T12:00:00.000Z', correctionReason: 'final mal digitada', ...extra });
+  caso('consulta (sin canCloseDay) corrige final de turno cerrado', await op(consulta, 'PATCH', lr, corrT({ correctedBy: 'consulta@uno.local' })), false);
+  caso('operador corrige final de turno cerrado sin motivo', await op(operador, 'PATCH', lr, { finalReading: 160, correctedBy: 'operador@uno.local', correctedAt: '2099-01-01T12:00:00.000Z' }), false);
+  caso('operador corrige final de turno cerrado con motivo corto', await op(operador, 'PATCH', lr, corrT({ correctionReason: 'x' })), false);
+  caso('operador corrige final de turno cerrado firmando como otro', await op(operador, 'PATCH', lr, corrT({ correctedBy: 'admin@uno.local' })), false);
+  caso('operador corrige final y además la inicial', await op(operador, 'PATCH', lr, corrT({ initialReading: 90 })), false);
+  caso('operador corrige final y además el precio', await op(operador, 'PATCH', lr, corrT({ fuelPrice: 1 })), false);
+  caso('operador corrige final con rollover no booleano', await op(operador, 'PATCH', lr, corrT({ rollover: 'si' })), false);
+  caso('operador corrige final de turno cerrado con motivo', await op(operador, 'PATCH', lr, corrT({ rollover: false })), true);
   caso('encargado recibe arqueo', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'operador@uno.local' })), true);
   caso('bombero cambia arqueo ya recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 1 })), false);
   caso('bombero (operador2) declara su arqueo', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), true);
@@ -216,6 +226,7 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   caso('encargado corrige arqueo recibido con el día cerrado', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, receivedBy: 'operador@uno.local' })), false);
   caso('encargado recibe arqueo con el día cerrado', await op(operador, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local', { receivedBy: 'operador@uno.local' })), false);
   caso('bombero declara arqueo con el día cerrado', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local', { cash: 5 })), false);
+  caso('operador corrige final de turno cerrado con el día cerrado', await op(operador, 'PATCH', lr, corrT({ finalReading: 170 })), false);
   // Turno abierto colado en un día cerrado (datos previos a esta regla): sus lecturas no se crean ni cambian.
   const sid3 = `${fT}_${tpl}C`;
   await owner('PATCH', `shifts/${sid3}`, { ...turnoDoc, templateId: `${tpl}C` });
@@ -227,6 +238,7 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
     [`shiftReadings/${sid2}_p1-A-1`, { shiftId: sid2, dispenserId: 'p1-A-1', date: fT, initialReading: 150 }],
     [`readings/${fT}_p1-A-9${run % 1000}`, { date: fT, dispenserId: `p1-A-9${run % 1000}`, initialReading: 150, fuelPrice: 34.05, status: 'activo' }],
   ]), true);
+  caso('operador corrige final de turno cerrado con el día reabierto', await op(operador, 'PATCH', lr, corrT({ finalReading: 170 })), true);
   caso('encargado corrige arqueo recibido con el día reabierto', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, receivedBy: 'operador@uno.local' })), true);
   caso('consulta escribe puntero de turno', await op(consulta, 'PATCH', 'shiftState/actual', { openShiftId: null, lastShiftId: sid2 }), false);
   caso('operador escribe puntero con otro id', await op(operador, 'PATCH', 'shiftState/otro', { testPing: run }), false);

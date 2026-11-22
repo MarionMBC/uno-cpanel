@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   bloqueoCierreDia, calcArqueo, calcVentaTurno, fechaDeTurno, idArqueo, idLecturaTurno, idTurno, inicialEncadenada,
-  normalizarOperacion, OPERACION_DEFAULT, plantillaVigente, PLANTILLAS_DEFAULT, preciosCambiados, rompeCadena,
+  normalizarOperacion, OPERACION_DEFAULT, planCorreccion, plantillaVigente, PLANTILLAS_DEFAULT, preciosCambiados, recalcularArqueo, rompeCadena,
   tramosDiarios, turnoAoa, validarArqueo, validarAsignaciones, validarPlantillas, ventasPorBombero,
 } from './turnos.ts';
 import { calcVenta } from './totalizadores.ts';
@@ -185,4 +185,70 @@ test('correo del bombero: allowlist (no rompe el id del arqueo)', () => {
   assert.deepEqual(a('Juan.Perez+t1@uno.local'), []);
   assert.ok(a('a/b@uno.local').some(e => e.includes('correo inválido')));
   assert.ok(a('a@b').some(e => e.includes('correo inválido')));
+});
+
+// ─── TASK-022 corrección de una final con el turno cerrado ───
+{
+  // Día con dos turnos: T1 1000→1200 (mal digitada; real 1150) y T2 abrió en 1150 marcando la diferencia.
+  const t1 = lectura({ shiftId: 'D_T1', initialReading: 1000, finalReading: 1200 });
+  const vT1 = calcVentaTurno(t1, {});
+  const vT2 = calcVentaTurno(lectura({ shiftId: 'D_T2', initialReading: 1150, finalReading: 1400 }), {});
+  const diaria = { fuelId: 'diesel', fuelPrice: 34.05, initialReading: 1000, finalReading: 1400, status: 'activo' as const, tramos: [...tramosDiarios(undefined, 'D_T1', vT1), ...tramosDiarios(undefined, 'D_T2', vT2)] };
+
+  test('corrección: reemplaza los tramos del turno y la diaria vuelve a cuadrar', () => {
+    assert.equal(calcVenta(diaria, {}).estado, 'invalida'); // 450 L de tramos contra 400 L del totalizador
+    const p = planCorreccion({ sr: t1, nuevaFinal: 1150, rollover: false, diaria, siguiente: { nombre: 'Tarde', initialReading: 1150 }, precios: {} });
+    assert.ok(p.ok);
+    if (!p.ok) return;
+    assert.equal(p.venta.litros, 150);
+    assert.equal(p.diaria?.finalReading, 1400); // la final del día es la del T2: no se toca
+    assert.deepEqual(p.diaria?.tramos.filter(t => t.shiftId === 'D_T1'), [{ litros: 150, precio: 34.05, shiftId: 'D_T1' }]);
+    assert.equal(calcVenta({ ...diaria, ...p.diaria }, {}).litros, 400);
+  });
+
+  test('corrección: siguiente turno encadenado con la final vieja → bloqueada', () => {
+    const p = planCorreccion({ sr: t1, nuevaFinal: 1150, rollover: false, diaria, siguiente: { nombre: 'Tarde', initialReading: 1200 }, precios: {} });
+    assert.equal(p.ok, false);
+    if (!p.ok) assert.match(p.error, /Tarde ya abrió esta manguera con inicial 1200/);
+  });
+
+  test('corrección del último turno: mueve también la final diaria', () => {
+    const d1 = { fuelId: 'diesel', fuelPrice: 34.05, initialReading: 1000, finalReading: 1200, status: 'activo' as const, tramos: tramosDiarios(undefined, 'D_T1', vT1) };
+    const p = planCorreccion({ sr: t1, nuevaFinal: 1180.5, rollover: false, diaria: d1, siguiente: null, precios: {} });
+    assert.ok(p.ok);
+    if (!p.ok) return;
+    assert.equal(p.diaria?.finalReading, 1180.5);
+    assert.equal(p.diaria?.rollover, false);
+    assert.equal(calcVenta({ ...d1, ...p.diaria }, {}).litros, 180.5);
+  });
+
+  test('corrección: final menor a la inicial o al último corte, igual a la guardada, o sin final → error', () => {
+    const conCorte = lectura({ shiftId: 'D_T1', initialReading: 1000, finalReading: 1200, cuts: [{ reading: 1100, fuelPrice: 33, at: '' }] });
+    assert.equal(planCorreccion({ sr: conCorte, nuevaFinal: 1050, rollover: false, diaria: null, siguiente: null, precios: {} }).ok, false);
+    assert.equal(planCorreccion({ sr: t1, nuevaFinal: 1200, rollover: false, diaria: null, siguiente: null, precios: {} }).ok, false);
+    assert.equal(planCorreccion({ sr: lectura({ shiftId: 'D_T1' }), nuevaFinal: 1100, rollover: false, diaria: null, siguiente: null, precios: {} }).ok, false);
+    assert.equal(planCorreccion({ sr: t1, nuevaFinal: -1, rollover: false, diaria: null, siguiente: null, precios: {} }).ok, false);
+  });
+
+  test('corrección: vuelta a cero en el último turno marca rollover en la diaria', () => {
+    const sr = lectura({ shiftId: 'D_T1', initialReading: 999900, finalReading: 999990, meterMax: 999999.999 });
+    const d = { fuelId: 'diesel', fuelPrice: 34.05, initialReading: 999900, finalReading: 999990, status: 'activo' as const, tramos: tramosDiarios(undefined, 'D_T1', calcVentaTurno(sr, {})) };
+    const p = planCorreccion({ sr, nuevaFinal: 50, rollover: true, diaria: d, siguiente: null, precios: {} });
+    assert.ok(p.ok);
+    if (p.ok) { assert.equal(p.diaria?.rollover, true); assert.equal(calcVenta({ ...d, ...p.diaria, meterMax: 999999.999 }, {}).estado, 'ok'); }
+  });
+
+  test('corrección que descuadra una diaria que cuadraba → bloqueada', () => {
+    // T1 y T2 encadenados (diaria cuadra); el siguiente no se pasó (p. ej. otra manguera): la diaria lo detecta.
+    const vB = calcVentaTurno(lectura({ shiftId: 'D_T2', initialReading: 1200, finalReading: 1400 }), {});
+    const d = { ...diaria, tramos: [...tramosDiarios(undefined, 'D_T1', vT1), ...tramosDiarios(undefined, 'D_T2', vB)] };
+    assert.equal(calcVenta(d, {}).estado, 'ok');
+    const p = planCorreccion({ sr: t1, nuevaFinal: 1150, rollover: false, diaria: d, siguiente: null, precios: {} });
+    assert.equal(p.ok, false);
+  });
+}
+
+test('recalcularArqueo: nuevo esperado, mismo declarado', () => {
+  const r = recalcularArqueo({ cashFund: 2000, cash: 7000, card: 0, credits: 0, partialDrops: 0 }, 5107.5);
+  assert.deepEqual(r, { expectedSales: 5107.5, expected: 7107.5, declared: 7000, difference: -107.5, status: 'con_diferencia' });
 });
