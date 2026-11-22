@@ -1,9 +1,9 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import {
   collection, doc, setDoc, addDoc, writeBatch,
-  onSnapshot, query, orderBy, getDocs, where, runTransaction
+  onSnapshot, query, orderBy, getDocs, where, runTransaction, serverTimestamp, Timestamp
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole } from '@/types';
@@ -11,6 +11,8 @@ import { INITIAL_PUMPS, PRICE_HISTORY, FUELS, DEFAULT_DIFERENCIAL_POR_LITRO } fr
 import { useAuth } from '@/contexts/AuthContext';
 import { diaOperativo } from '@/lib/fecha';
 import { idLectura } from '@/lib/totalizadores';
+import { ordenarPorVigencia, precioVigente, proximoPrecio, type Precios } from '@/lib/precios';
+import { armarEntrada, ordenarAuditoria, type AuditInput } from '@/lib/auditoria';
 
 
 interface AppContextType {
@@ -19,11 +21,21 @@ interface AppContextType {
   dayStatus: DayStatusValue;
   setDayStatus: (s: DayStatusValue) => Promise<void>;
   auditLog: AuditEntry[];
-  addAuditEntry: (entry: Omit<AuditEntry, 'id'>) => Promise<void>;
+  /** Registra en auditoría. Quién (uid, nombre de la ficha, rol) y cuándo (`at` del servidor) los pone el contexto. */
+  addAuditEntry: (entry: AuditInput) => Promise<void>;
+  /** Historial ordenado por vigencia (más reciente primero). */
   priceHistory: FuelPrice[];
   addPriceEntry: (entry: FuelPrice) => Promise<void>;
-  currentPrices: { super: number; regular: number; diesel: number };
-  setCurrentPrices: (p: { super: number; regular: number; diesel: number }) => Promise<void>;
+  /** Precio por litro vigente ahora (se reevalúa cada minuto). */
+  currentPrices: Precios;
+  /** Entrada vigente ahora (null si no hay ninguna y se usa la semilla). */
+  precioActual: FuelPrice | null;
+  /** Próximo precio programado (vigencia futura), si lo hay. */
+  precioProximo: FuelPrice | null;
+  /** Precio por litro que rige en un instante (Lectura inicial lo toma al confirmar). */
+  preciosEn: (instante: Date) => Precios;
+  /** Registra un precio que rige desde `vigenteDesde` (ISO). No toca lecturas ya abiertas. */
+  setCurrentPrices: (p: Precios, vigenteDesde: string) => Promise<void>;
   readings: DailyReading[];
   /** Actualiza lecturas existentes (merge). Sin `id` usa el ID determinista `{fecha}_{dispenserId}`. */
   saveReadings: (readings: DailyReading[]) => Promise<void>;
@@ -57,7 +69,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [dayData, setDayData] = useState<DayStatus | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [priceHistory, setPriceHistory] = useState<FuelPrice[]>([]);
-  const [currentPrices, setCurrentPricesState] = useState(DEFAULT_PRICES);
   const [readings, setReadingsState] = useState<DailyReading[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [roles, setRoles] = useState<AppRole[]>([]);
@@ -69,8 +80,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Día operativo en hora de Honduras; se revisa cada minuto para cambiar de día sin recargar.
   const [todayDoc, setTodayDoc] = useState(() => diaOperativo());
+  // Minuto actual (ISO): el precio vigente cambia solo cuando llega su vigencia.
+  const [minuto, setMinuto] = useState(() => new Date().toISOString().slice(0, 16));
   useEffect(() => {
-    const t = setInterval(() => setTodayDoc(d => { const n = diaOperativo(); return n === d ? d : n; }), 60000);
+    const t = setInterval(() => {
+      setTodayDoc(d => { const n = diaOperativo(); return n === d ? d : n; });
+      setMinuto(new Date().toISOString().slice(0, 16));
+    }, 60000);
     return () => clearInterval(t);
   }, []);
 
@@ -78,7 +94,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!authLoading && !autorizado) {
       // Sesión cerrada: no dejar en memoria datos del usuario anterior (p. ej. auditoría de un admin).
       setPumpsState([]); setAuditLog([]); setPriceHistory([]); setReadingsState([]);
-      setUsers([]); setRoles([]); setDayData(null); setCurrentPricesState(DEFAULT_PRICES);
+      setUsers([]); setRoles([]); setDayData(null);
       setLoading(false);
     }
     if (autorizado) setLoading(true);
@@ -170,11 +186,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubPrices = onSnapshot(
       query(collection(db, 'prices'), orderBy('timestamp', 'desc')),
       snap => {
-        const prices = snap.docs.map(d => ({ id: d.id, ...d.data() } as FuelPrice));
-        setPriceHistory(prices);
-        if (prices.length > 0) {
-          setCurrentPricesState({ super: prices[0].super, regular: prices[0].regular, diesel: prices[0].diesel });
-        }
+        setPriceHistory(ordenarPorVigencia(snap.docs.map(d => ({ id: d.id, ...d.data() } as FuelPrice))));
         loaded.prices = true;
         tryDone();
       },
@@ -220,9 +232,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!verAuditoria) { setAuditLog([]); return; }
+    // Sin orderBy en la consulta: orderBy('at') dejaría fuera las entradas viejas sin `at`.
+    // Se ordena en el cliente por `at` (o date+timestamp en las viejas).
     return onSnapshot(
-      query(collection(db, 'auditLog'), orderBy('timestamp', 'desc')),
-      snap => setAuditLog(snap.docs.map(d => ({ id: d.id, ...d.data() } as AuditEntry))),
+      collection(db, 'auditLog'),
+      snap => setAuditLog(ordenarAuditoria(snap.docs.map(d => {
+        const data = d.data({ serverTimestamps: 'estimate' });
+        const at = data.at instanceof Timestamp ? data.at.toDate().toISOString() : typeof data.at === 'string' ? data.at : undefined;
+        return { id: d.id, ...data, at } as AuditEntry;
+      }))),
       e => console.warn('Sin acceso a auditoría:', e.message),
     );
   }, [verAuditoria]);
@@ -252,22 +270,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await setDoc(doc(db, 'dayStatus', todayDoc), { date: todayDoc, ...data }, { merge: true });
   }, [todayDoc]);
 
-  const addAuditEntry = useCallback(async (entry: Omit<AuditEntry, 'id'>) => {
-    // Firestore rechaza campos undefined (before/after/reason son opcionales).
-    const limpio = Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined));
-    await addDoc(collection(db, 'auditLog'), limpio);
-  }, []);
+  const rolNombre = roles.find(r => r.id === appUser?.roleId)?.name || appUser?.roleId || 'Desconocido';
+  const addAuditEntry = useCallback(async (entry: AuditInput) => {
+    // Las reglas exigen userId == auth.uid y userName == nombre de la ficha: salen siempre de la sesión.
+    if (!appUser?.uid) throw new Error('Sin sesión: no se puede registrar en auditoría.');
+    const e = armarEntrada(entry, { uid: appUser.uid, name: appUser.name, roleName: rolNombre }, new Date());
+    await addDoc(collection(db, 'auditLog'), { ...e, at: serverTimestamp() });
+  }, [appUser, rolNombre]);
 
   const addPriceEntry = useCallback(async (entry: FuelPrice) => {
     const { id: _id, ...rest } = entry as FuelPrice & { id?: string };
     await addDoc(collection(db, 'prices'), { ...rest, timestamp: new Date().getTime() });
   }, []);
 
-  const setCurrentPrices = useCallback(async (p: { super: number; regular: number; diesel: number }) => {
-    setCurrentPricesState(p);
-    const today = new Date().toLocaleDateString('es-HN', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    await addDoc(collection(db, 'prices'), { date: today, ...p, registeredBy: 'Operador', timestamp: new Date().getTime() });
-  }, []);
+  const precioActual = useMemo(() => precioVigente(priceHistory, `${minuto}:59.999Z`), [priceHistory, minuto]);
+  const precioProximo = useMemo(() => proximoPrecio(priceHistory, `${minuto}:59.999Z`), [priceHistory, minuto]);
+  const currentPrices = useMemo<Precios>(
+    () => (precioActual ? { super: precioActual.super, regular: precioActual.regular, diesel: precioActual.diesel } : DEFAULT_PRICES),
+    [precioActual],
+  );
+  const preciosEn = useCallback((instante: Date): Precios => {
+    const p = precioVigente(priceHistory, instante.toISOString());
+    return p ? { super: p.super, regular: p.regular, diesel: p.diesel } : DEFAULT_PRICES;
+  }, [priceHistory]);
+
+  const setCurrentPrices = useCallback(async (p: Precios, vigenteDesde: string) => {
+    await addDoc(collection(db, 'prices'), {
+      date: diaOperativo(new Date(vigenteDesde)),
+      vigenteDesde,
+      ...p,
+      registeredBy: appUser?.name || appUser?.email || 'Desconocido',
+      timestamp: new Date().getTime(),
+    });
+  }, [appUser]);
 
   const saveReadings = useCallback(async (newReadings: DailyReading[]) => {
     const batch = writeBatch(db);
@@ -313,7 +348,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dayData, updateDayData,
       auditLog, addAuditEntry,
       priceHistory, addPriceEntry,
-      currentPrices, setCurrentPrices,
+      currentPrices, setCurrentPrices, precioActual, precioProximo, preciosEn,
       readings, saveReadings, createInitialReadings,
       users, roles, saveUser, saveRole,
       loading,

@@ -15,7 +15,7 @@ import { AppUser, AppRole, RolePermissions } from '@/types';
 type Tab = 'usuarios' | 'roles';
 
 export default function UsuariosScreen() {
-  const { users, roles, saveUser, saveRole } = useApp();
+  const { users, roles, saveUser, saveRole, addAuditEntry } = useApp();
   const toast = useToast();
 
   const [activeTab, setActiveTab] = useState<Tab>('usuarios');
@@ -29,12 +29,33 @@ export default function UsuariosScreen() {
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [draftRole, setDraftRole] = useState<Partial<AppRole>>({ name: '', permissions: { canManageUsers: false, canManagePumps: false, canCloseDay: false, canEditPrices: false, canViewAudit: false, canManageInventory: false } });
 
+  const nombreRol = (id: string) => roles.find(r => r.id === id)?.name || id;
+  const descUsuario = (u: AppUser) => `${u.name} · ${nombreRol(u.roleId)} · ${u.status}`;
+  const descPermisos = (r: AppRole) => {
+    const on = Object.entries(r.permissions || {}).filter(([, v]) => v).map(([k]) => k.replace(/^can/, ''));
+    return `${r.name}: ${on.length ? on.join(', ') : 'sin permisos'}`;
+  };
+  const auditar = (entry: Parameters<typeof addAuditEntry>[0]) => {
+    addAuditEntry(entry).catch(e => console.warn('Auditoría no registrada:', e));
+  };
+
   const handleSaveUser = async () => {
     if (!draftUser.email || !draftUser.name || !draftUser.roleId) {
       toast.error('Datos incompletos', 'Nombre, email y rol son obligatorios.');
       return;
     }
-    await saveUser(draftUser as AppUser);
+    const previo = users.find(u => (u.id || u.email) === (draftUser.id || draftUser.email));
+    try {
+      await saveUser(draftUser as AppUser);
+    } catch (e) {
+      console.error(e);
+      toast.error('No se guardó', 'Revise la conexión o sus permisos e intente de nuevo.');
+      return;
+    }
+    auditar({
+      action: previo ? 'Usuario editado' : 'Usuario creado', target: draftUser.email, detail: draftUser.name, icon: 'users',
+      before: previo ? descUsuario(previo) : undefined, after: descUsuario(draftUser as AppUser),
+    });
     toast.success('Usuario guardado', `${draftUser.name} ha sido guardado correctamente.`);
     setUserModalOpen(false);
   };
@@ -42,7 +63,17 @@ export default function UsuariosScreen() {
   const handleToggleUserStatus = async () => {
     if (!confirmToggleUser) return;
     const newStatus = confirmToggleUser.status === 'activo' ? 'inactivo' : 'activo';
-    await saveUser({ ...confirmToggleUser, status: newStatus });
+    try {
+      await saveUser({ ...confirmToggleUser, status: newStatus });
+    } catch (e) {
+      console.error(e);
+      toast.error('No se guardó', 'Revise la conexión o sus permisos e intente de nuevo.');
+      return;
+    }
+    auditar({
+      action: newStatus === 'activo' ? 'Usuario activado' : 'Usuario desactivado', target: confirmToggleUser.email,
+      detail: confirmToggleUser.name, icon: 'users', before: confirmToggleUser.status, after: newStatus,
+    });
     toast.success('Estado actualizado', `${confirmToggleUser.name} ahora está ${newStatus}.`);
     setConfirmToggleUser(null);
   };
@@ -56,7 +87,18 @@ export default function UsuariosScreen() {
       ...draftRole,
       id: draftRole.id || draftRole.name.toLowerCase().replace(/\s+/g, '-'),
     } as AppRole;
-    await saveRole(roleToSave);
+    const previo = roles.find(r => r.id === roleToSave.id);
+    try {
+      await saveRole(roleToSave);
+    } catch (e) {
+      console.error(e);
+      toast.error('No se guardó', 'Revise la conexión o sus permisos e intente de nuevo.');
+      return;
+    }
+    auditar({
+      action: previo ? 'Rol editado' : 'Rol creado', target: roleToSave.name, detail: 'Permisos del rol', icon: 'shield',
+      before: previo ? descPermisos(previo) : undefined, after: descPermisos(roleToSave),
+    });
     toast.success('Rol guardado', `El rol ${roleToSave.name} se ha guardado.`);
     setRoleModalOpen(false);
   };
