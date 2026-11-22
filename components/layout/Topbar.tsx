@@ -12,6 +12,7 @@ const TITLES: Record<string, string> = {
   'lectura-inicial': 'Registro de lectura inicial',
   'lectura-final': 'Registro de lectura final',
   'totalizadores': 'Cuadro de totalizadores',
+  'turnos': 'Turnos y arqueo por bombero',
   'control-combustible': 'Control inventario',
   'reporte-diario': 'Reporte diario',
   'reporte-mensual': 'Reporte mensual',
