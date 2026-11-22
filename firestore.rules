@@ -77,6 +77,11 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/dayStatus/$(fecha))
         && get(/databases/$(database)/documents/dayStatus/$(fecha)).data.get('status', '') == 'cerrado';
     }
+    // `tramos` (venta por turno) decide la venta: solo lo escribe quien puede cerrar el día (cierre de turno).
+    function tramosPermitidos(previos) {
+      return (request.resource.data.get('tramos', null) == previos || permiso('canCloseDay'))
+        && (!('tramos' in request.resource.data) || request.resource.data.tramos is list);
+    }
     function lecturaValida() {
       return request.resource.data.date is string
         && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
@@ -100,11 +105,11 @@ service cloud.firestore {
     // con el día cerrado solo corrige quien puede cerrar el día. No se borran.
     match /readings/{readingId} {
       allow read: if activo();
-      allow create: if activo() && lecturaValida()
+      allow create: if activo() && lecturaValida() && tramosPermitidos(null)
         && (!diaCerrado(request.resource.data.date) || permiso('canCloseDay'));
       // Cambiar la lectura inicial ya registrada es una corrección: exige canCloseDay.
       // Igual cambiar (o borrar) una final ya guardada, o su vuelta a cero: es corrección con motivo.
-      allow update: if activo() && lecturaValida()
+      allow update: if activo() && lecturaValida() && tramosPermitidos(resource.data.get('tramos', null))
         && request.resource.data.date == resource.data.date
         && (request.resource.data.initialReading == resource.data.initialReading || permiso('canCloseDay'))
         && (!('finalReading' in resource.data) || finalIntacta() || permiso('canCloseDay'))

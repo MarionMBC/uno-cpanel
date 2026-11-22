@@ -146,6 +146,15 @@ caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `
   caso('consulta cambia precio de final guardada', await op(consulta, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 1, status: 'activo' }), false);
   caso('admin corrige precio de final guardada', await op(admin, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 35, status: 'activo' }), true);
 }
+{ // tramos falsos (review r2 TASK-019): consulta no puede escribir tramos en una lectura sin final
+  const id = `readings/tramos_${run}`;
+  caso('operador abre lectura sin tramos', await op(operador, 'PATCH', id, { date: futuro, initialReading: 10 }), true);
+  const conTramo = { fields: { date: { stringValue: futuro }, initialReading: { doubleValue: 10 }, tramos: { arrayValue: { values: [{ mapValue: { fields: { litros: { doubleValue: -500 }, precio: { doubleValue: 34.05 } } } }] } } } };
+  const r1 = await fetch(`${FS}/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${consulta}` }, body: JSON.stringify(conTramo) });
+  caso('consulta escribe tramos falsos', r1.status, false);
+  const r2 = await fetch(`${FS}/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin}` }, body: JSON.stringify(conTramo) });
+  caso('admin (canCloseDay) escribe tramos', r2.status, true);
+}
 caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
 caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
 
@@ -248,7 +257,7 @@ async function limpiar() {
       const id = d.name.split('/').pop();
       const f = d.fields || {};
       const accion = f.action?.stringValue;
-      const deLaPrueba = id.includes(String(run)) || id.startsWith('test_') || id.startsWith('rvr') || id.startsWith('fake_')
+      const deLaPrueba = id.includes(String(run)) || id.startsWith('tramos_') || id.startsWith('rv019') || id.startsWith('test_') || id.startsWith('rvr') || id.startsWith('fake_')
         || id.startsWith('2099-') || id.startsWith('admin_test') || id.startsWith('hack') || id.startsWith('robo')
         || (col === 'auditLog' && ['x', 'Lectura', 'Cierre del día', 'y'].includes(accion ?? '') && !f.target);
       if (deLaPrueba) await fetch(`${FS}/${col}/${id}`, { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });

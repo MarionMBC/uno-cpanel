@@ -31,7 +31,9 @@ interface Correccion { fila: Fila; campo: 'inicial' | 'final'; valor: string; mo
 
 const msgInvalida = (v: Venta | null) => v?.motivo === 'tope'
   ? `Más de ${fmtNum(LITROS_MAX_DIA, 0)} L en una manguera en un día: revisa la lectura.`
-  : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
+  : v?.motivo === 'tramos'
+    ? 'Los litros de los turnos no cuadran con el totalizador: revisa las lecturas por turno.'
+    : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
 
 export default function LecturaFinalScreen() {
   const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles, today, operacion } = useApp();

@@ -240,3 +240,13 @@ test('calcVenta con tramos: sin final sigue pendiente, mantenimiento manda, tope
   assert.deepEqual(calcVenta({ ...sin, tramos: [] }, PRECIOS), calcVenta(sin, PRECIOS));
   assert.deepEqual(sumarVentas([lectura({ finalReading: 200, tramos: [{ litros: 50, precio: 30 }, { litros: 50, precio: 31 }] })], PRECIOS), { litros: 100, total: 3050 });
 });
+
+test('tramos que no cuadran con el totalizador invalidan la venta (review r2 TASK-019)', () => {
+  const base = { fuelId: 'super', fuelPrice: 37.76, initialReading: 100, finalReading: 150, status: 'activo' as const };
+  const ok = calcVenta({ ...base, tramos: [{ litros: 30, precio: 37.76 }, { litros: 20, precio: 38.5 }] }, {});
+  assert.equal(ok.estado, 'ok');
+  assert.equal(ok.litros, 50);
+  assert.equal(ok.total, round2(30 * 37.76) + round2(20 * 38.5));
+  assert.equal(calcVenta({ ...base, tramos: [{ litros: -500, precio: 34.05 }] }, {}).estado, 'invalida');
+  assert.equal(calcVenta({ ...base, tramos: [{ litros: 30, precio: 37.76 }] }, {}).motivo, 'tramos');
+});

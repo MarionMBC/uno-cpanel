@@ -129,7 +129,7 @@ export interface Venta {
   /** round(litros × precio, 2). */
   total: number;
   /** Por qué es inválida: final menor a la inicial (sin vuelta a cero válida) o litros sobre el tope diario. */
-  motivo?: 'menor' | 'tope';
+  motivo?: 'menor' | 'tope' | 'tramos';
 }
 
 /** Único cálculo de venta de una lectura. Lo usan Lectura final, Dashboard, Cuadro y (luego) Reportes. */
@@ -137,8 +137,18 @@ export function calcVenta(r: LecturaVenta, precios: PreciosPorLitro): Venta {
   const precio = Number.isFinite(r.fuelPrice) && r.fuelPrice > 0 ? r.fuelPrice : precios[r.fuelId] || 0;
   if (r.status === 'mantenimiento') return { estado: 'mantenimiento', litros: 0, precio, total: 0 };
   if (r.finalReading === undefined || r.finalReading === null || Number.isNaN(r.finalReading)) return { estado: 'pendiente', litros: 0, precio, total: 0 };
-  if (r.tramos && r.tramos.length > 0) return ventaPorTramos(r.tramos, precio);
   const litros = litrosEntre(r.initialReading, r.finalReading, r.rollover === true, r.meterMax ?? METER_MAX_DEFAULT);
+  if (r.tramos && r.tramos.length > 0) {
+    // Los tramos (turnos) deben explicar exactamente lo que marcó el totalizador: si no cuadran
+    // (tramo negativo, inventado o faltante), la venta no se acepta y la lectura queda inválida.
+    const sumaTramos = round(r.tramos.reduce((s, t) => s + (Number.isFinite(t.litros) ? t.litros : NaN), 0), 3);
+    const tramosOk = r.tramos.every(t => Number.isFinite(t.litros) && t.litros >= 0 && Number.isFinite(t.precio) && t.precio > 0);
+    if (tramosOk && excedeTope(sumaTramos)) return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'tope' };
+    if (!tramosOk || litros === null || Math.abs(sumaTramos - litros) > 0.01) {
+      return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'tramos' };
+    }
+    return ventaPorTramos(r.tramos, precio);
+  }
   if (litros === null) return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'menor' };
   if (excedeTope(litros)) return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'tope' };
   return { estado: 'ok', litros, precio, total: round(litros * precio, 2) };
