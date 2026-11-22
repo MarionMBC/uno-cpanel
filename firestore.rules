@@ -92,7 +92,8 @@ service cloud.firestore {
         && request.resource.data.get('fuelPrice', null) == resource.data.get('fuelPrice', null)
         && request.resource.data.get('meterMax', null) == resource.data.get('meterMax', null)
         && request.resource.data.get('fuelId', null) == resource.data.get('fuelId', null)
-        && request.resource.data.get('dispenserId', null) == resource.data.get('dispenserId', null);
+        && request.resource.data.get('dispenserId', null) == resource.data.get('dispenserId', null)
+        && request.resource.data.get('tramos', null) == resource.data.get('tramos', null);
     }
 
     // Lecturas de totalizadores: cualquier usuario activo registra mientras el día esté abierto;
@@ -133,11 +134,33 @@ service cloud.firestore {
     function fechaIso(f) { return f is string && f.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
     function turno(id) { return get(/databases/$(database)/documents/shifts/$(id)).data; }
     function numOpcional(d, k) { return !(k in d) || d[k] is number; }
+    function rutaEstado() { return /databases/$(database)/documents/shiftState/actual; }
+    function rutaTurno(id) { return /databases/$(database)/documents/shifts/$(id); }
+    // Turno abierto según el puntero antes de la escritura (null si no hay puntero).
+    function abiertoAntes() { return exists(rutaEstado()) ? get(rutaEstado()).data.get('openShiftId', null) : null; }
+    function abiertoDespues() { return getAfter(rutaEstado()).data.get('openShiftId', null); }
 
     // Puntero al turno abierto y al último cerrado (garantiza un solo turno abierto a la vez).
+    // Solo pasa de null → id (al abrir ese turno, creado en la misma transacción) o de id → null
+    // (al cerrar ese turno en la misma transacción; lastShiftId queda en ese id).
+    function abrePuntero(antes) {
+      return antes == null
+        && request.resource.data.openShiftId is string
+        && !exists(rutaTurno(request.resource.data.openShiftId))
+        && existsAfter(rutaTurno(request.resource.data.openShiftId))
+        && getAfter(rutaTurno(request.resource.data.openShiftId)).data.status == 'abierto';
+    }
+    function cierraPuntero(antes) {
+      return antes is string
+        && request.resource.data.get('openShiftId', '') == null
+        && request.resource.data.get('lastShiftId', null) == antes
+        && getAfter(rutaTurno(antes)).data.status == 'cerrado';
+    }
     match /shiftState/{docId} {
       allow read: if activo();
-      allow create, update: if docId == 'actual' && permiso('canCloseDay');
+      allow create: if docId == 'actual' && permiso('canCloseDay') && abrePuntero(null);
+      allow update: if docId == 'actual' && permiso('canCloseDay')
+        && (abrePuntero(resource.data.get('openShiftId', null)) || cierraPuntero(resource.data.get('openShiftId', null)));
       allow delete: if false;
     }
 
@@ -150,13 +173,24 @@ service cloud.firestore {
         && shiftId == request.resource.data.date + '_' + request.resource.data.templateId
         && request.resource.data.status == 'abierto'
         && request.resource.data.assignments is list
-        && request.resource.data.attendantEmails is list;
+        && request.resource.data.attendantEmails is list
+        && request.resource.data.dispenserIds is list
+        // Día cerrado: hay que reabrirlo (con motivo) antes de abrir un turno en él.
+        && !diaCerrado(request.resource.data.date)
+        // Un solo turno abierto: el puntero estaba libre y queda apuntando a este turno.
+        && abiertoAntes() == null
+        && abiertoDespues() == shiftId;
       allow update: if permiso('canCloseDay')
         && resource.data.status == 'abierto'
         && request.resource.data.status in ['abierto', 'cerrado']
         && request.resource.data.date == resource.data.date
         && request.resource.data.templateId == resource.data.templateId
-        && request.resource.data.attendantEmails is list;
+        && request.resource.data.attendantEmails is list
+        && request.resource.data.get('dispenserIds', null) == resource.data.get('dispenserIds', null)
+        && !diaCerrado(resource.data.date)
+        // Cerrar el turno libera el puntero en la misma transacción.
+        && (request.resource.data.status == 'abierto'
+            || (abiertoDespues() == null && getAfter(rutaEstado()).data.get('lastShiftId', null) == shiftId));
       allow delete: if false;
     }
 
@@ -167,14 +201,19 @@ service cloud.firestore {
         && readingId == request.resource.data.shiftId + '_' + request.resource.data.dispenserId
         && request.resource.data.initialReading is number
         && numOpcional(request.resource.data, 'finalReading')
-        && existsAfter(/databases/$(database)/documents/shifts/$(request.resource.data.shiftId))
-        && getAfter(/databases/$(database)/documents/shifts/$(request.resource.data.shiftId)).data.status == 'abierto';
+        && existsAfter(rutaTurno(request.resource.data.shiftId))
+        && getAfter(rutaTurno(request.resource.data.shiftId)).data.status == 'abierto'
+        && request.resource.data.date == getAfter(rutaTurno(request.resource.data.shiftId)).data.date
+        && request.resource.data.dispenserId in getAfter(rutaTurno(request.resource.data.shiftId)).data.dispenserIds
+        && !diaCerrado(request.resource.data.date);
       allow update: if permiso('canCloseDay')
         && request.resource.data.shiftId == resource.data.shiftId
         && request.resource.data.dispenserId == resource.data.dispenserId
+        && request.resource.data.date == resource.data.date
         && request.resource.data.initialReading == resource.data.initialReading
         && numOpcional(request.resource.data, 'finalReading')
-        && turno(resource.data.shiftId).status == 'abierto';
+        && turno(resource.data.shiftId).status == 'abierto'
+        && !diaCerrado(resource.data.date);
       allow delete: if false;
     }
 
@@ -187,7 +226,10 @@ service cloud.firestore {
         && request.resource.data.cash >= 0 && request.resource.data.card >= 0
         && request.resource.data.credits >= 0 && request.resource.data.partialDrops >= 0
         && exists(/databases/$(database)/documents/shifts/$(request.resource.data.shiftId))
-        && request.resource.data.email in turno(request.resource.data.shiftId).attendantEmails;
+        && request.resource.data.email in turno(request.resource.data.shiftId).attendantEmails
+        && request.resource.data.date == turno(request.resource.data.shiftId).date
+        // Con el día cerrado el arqueo no se toca (ni el recibido): hay que reabrir el día.
+        && !diaCerrado(request.resource.data.date);
     }
     function arqueoPropio() {
       return email().lower() == request.resource.data.email && !('receivedBy' in request.resource.data);
