@@ -22,7 +22,10 @@ async function token(email, password = 'uno12345') {
 }
 const uids = {};
 
-const val = v => (typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v } : { booleanValue: v });
+const val = v => (v === null ? { nullValue: null } : typeof v === 'number' ? { doubleValue: v } : typeof v === 'string' ? { stringValue: v }
+  : Array.isArray(v) ? { arrayValue: { values: v.map(val) } }
+  : v && typeof v === 'object' ? { mapValue: { fields: Object.fromEntries(Object.entries(v).map(([k, x]) => [k, val(x)])) } }
+  : { booleanValue: v });
 const body = obj => JSON.stringify({ fields: Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, val(v)])) });
 
 async function op(tk, method, path, data) {
@@ -32,6 +35,20 @@ async function op(tk, method, path, data) {
   const r = await fetch(url, { method, headers, body: data ? body(data) : undefined });
   return r.status;
 }
+
+// Varias escrituras atómicas (como runTransaction): las reglas ven getAfter() de todas.
+const DOCS = `projects/${PROJECT}/databases/(default)/documents`;
+async function commit(tk, writes) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (tk) headers.Authorization = `Bearer ${tk}`;
+  const r = await fetch(`${FS}:commit`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ writes: writes.map(([path, data]) => ({ update: { name: `${DOCS}/${path}`, fields: JSON.parse(body(data)).fields } })) }),
+  });
+  return r.status;
+}
+// Escritura de preparación con la credencial de administrador del emulador (ignora reglas).
+const owner = (method, path, data) => fetch(`${FS}/${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' }, body: data ? body(data) : undefined });
 
 let fallos = 0;
 function caso(nombre, status, esperaPermitido) {
@@ -129,20 +146,118 @@ caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `
   caso('consulta cambia precio de final guardada', await op(consulta, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 1, status: 'activo' }), false);
   caso('admin corrige precio de final guardada', await op(admin, 'PATCH', id, { date: futuro, initialReading: 10, finalReading: 20, fuelPrice: 35, status: 'activo' }), true);
 }
+{ // tramos falsos (review r2 TASK-019): consulta no puede escribir tramos en una lectura sin final
+  const id = `readings/tramos_${run}`;
+  caso('operador abre lectura sin tramos', await op(operador, 'PATCH', id, { date: futuro, initialReading: 10 }), true);
+  const conTramo = { fields: { date: { stringValue: futuro }, initialReading: { doubleValue: 10 }, tramos: { arrayValue: { values: [{ mapValue: { fields: { litros: { doubleValue: -500 }, precio: { doubleValue: 34.05 } } } }] } } } };
+  const r1 = await fetch(`${FS}/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${consulta}` }, body: JSON.stringify(conTramo) });
+  caso('consulta escribe tramos falsos', r1.status, false);
+  const r2 = await fetch(`${FS}/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin}` }, body: JSON.stringify(conTramo) });
+  caso('admin (canCloseDay) escribe tramos', r2.status, true);
+}
 caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
 caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
+
+// ─── TASK-019: turnos, lecturas por turno y arqueo por bombero ───
+{
+  const operador2 = await token('operador2@uno.local');
+  const fT = `2099-02-${String(run % 28 + 1).padStart(2, '0')}`;
+  const tpl = `R${run % 1000000}`;
+  const sid = `${fT}_${tpl}`;
+  const sid2 = `${fT}_${tpl}B`;
+  const asig = [{ email: 'consulta@uno.local', name: 'Solo Consulta', dispenserIds: ['p1-A-1'], cashFund: 500 }, { email: 'operador2@uno.local', name: 'Operador Dos', dispenserIds: ['p1-A-2'], cashFund: 500 }];
+  const turnoDoc = { date: fT, templateId: tpl, name: 'Prueba', status: 'abierto', assignments: asig, attendantEmails: ['consulta@uno.local', 'operador2@uno.local'], dispenserIds: ['p1-A-1', 'p1-A-2'] };
+  // El puntero es global: se guarda el de la app local y se deja libre para las pruebas; al final se restaura.
+  const estadoPrevio = await (await owner('GET', 'shiftState/actual')).json();
+  await owner('DELETE', 'shiftState/actual');
+  const abrir = (tk, id, doc, extra = []) => commit(tk, [[`shifts/${id}`, doc], ...extra, ['shiftState/actual', { openShiftId: id, lastShiftId: null }]]);
+  const cerrarT = (tk, id, doc) => commit(tk, [[`shifts/${id}`, { ...doc, status: 'cerrado' }], ['shiftState/actual', { openShiftId: null, lastShiftId: id }]]);
+  caso('consulta (sin canCloseDay) abre turno', await abrir(consulta, sid, turnoDoc), false);
+  caso('operador abre turno con id que no coincide', await abrir(operador, `${fT}_OTRO${run % 1000}`, turnoDoc), false);
+  caso('operador abre turno cerrado de entrada', await abrir(operador, sid, { ...turnoDoc, status: 'cerrado' }), false);
+  caso('operador abre turno sin tomar el puntero', await op(operador, 'PATCH', `shifts/${sid}`, turnoDoc), false);
+  caso('operador apunta el puntero a un turno que no crea', await op(operador, 'PATCH', 'shiftState/actual', { openShiftId: `${fT}_NOEXISTE`, lastShiftId: null }), false);
+  caso('operador abre turno (turno + puntero en una transacción)', await abrir(operador, sid, turnoDoc), true);
+  caso('operador abre un segundo turno con otro abierto', await abrir(operador, sid2, { ...turnoDoc, templateId: `${tpl}B` }), false);
+  caso('operador libera el puntero con el turno abierto', await op(operador, 'PATCH', 'shiftState/actual', { openShiftId: null, lastShiftId: sid }), false);
+  caso('operador escribe puntero arbitrario', await op(operador, 'PATCH', 'shiftState/actual', { testPing: run }), false);
+  caso('sin ficha lee turno', await op(extrano, 'GET', `shifts/${sid}`), false);
+  caso('consulta lee turno', await op(consulta, 'GET', `shifts/${sid}`), true);
+  const lr = `shiftReadings/${sid}_p1-A-1`;
+  caso('consulta crea lectura de turno', await op(consulta, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100 }), false);
+  caso('operador crea lectura de turno con id ajeno', await op(operador, 'PATCH', `shiftReadings/${sid}_p9`, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100 }), false);
+  caso('operador crea lectura de manguera fuera del turno', await op(operador, 'PATCH', `shiftReadings/${sid}_p9-A-9`, { shiftId: sid, dispenserId: 'p9-A-9', date: fT, initialReading: 100 }), false);
+  caso('operador crea lectura de turno con otra fecha', await op(operador, 'PATCH', `shiftReadings/${sid}_p1-A-2`, { shiftId: sid, dispenserId: 'p1-A-2', date: '2099-01-01', initialReading: 100 }), false);
+  caso('operador crea lectura de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100 }), true);
+  caso('operador cambia inicial de lectura de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 90 }), false);
+  caso('operador guarda final de turno', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 150 }), true);
+  caso('operador borra lectura de turno', await op(operador, 'DELETE', lr), false);
+  const arq = (email, extra = {}) => ({ shiftId: sid, date: fT, email, cash: 100, card: 0, credits: 0, partialDrops: 0, ...extra });
+  caso('bombero (consulta) declara su propio arqueo', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local')), true);
+  caso('bombero declara arqueo con fecha distinta a la del turno', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { date: '2099-01-01' })), false);
+  caso('bombero declara el arqueo de otro', await op(consulta, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), false);
+  caso('bombero se marca recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'consulta@uno.local' })), false);
+  caso('arqueo con monto negativo', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: -1 })), false);
+  caso('arqueo de no asignado (aunque sea admin)', await op(admin, 'PATCH', `cashCounts/${sid}_extrano@uno.local`, arq('extrano@uno.local')), false);
+  caso('operador cierra turno sin liberar el puntero', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'cerrado' }), false);
+  caso('operador cierra turno liberando el puntero con otro id', await commit(operador, [[`shifts/${sid}`, { ...turnoDoc, status: 'cerrado' }], ['shiftState/actual', { openShiftId: null, lastShiftId: 'otro' }]]), false);
+  caso('operador cierra turno (turno + puntero en una transacción)', await cerrarT(operador, sid, turnoDoc), true);
+  caso('operador modifica turno cerrado', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'abierto' }), false);
+  caso('operador cambia final con turno cerrado', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 160 }), false);
+  caso('encargado recibe arqueo', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'operador@uno.local' })), true);
+  caso('bombero cambia arqueo ya recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 1 })), false);
+  caso('bombero (operador2) declara su arqueo', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), true);
+  caso('admin borra arqueo', await op(admin, 'DELETE', `cashCounts/${sid}_consulta@uno.local`), false);
+  caso('admin borra turno', await op(admin, 'DELETE', `shifts/${sid}`), false);
+  // Día cerrado: no se abren turnos, no se tocan lecturas de turno ni arqueos (hay que reabrir el día).
+  caso('(prep) admin cierra el día del turno', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'cerrado' }), true);
+  caso('operador abre turno en día cerrado', await abrir(operador, sid2, { ...turnoDoc, templateId: `${tpl}B` }), false);
+  caso('admin abre turno en día cerrado', await abrir(admin, sid2, { ...turnoDoc, templateId: `${tpl}B` }), false);
+  caso('encargado corrige arqueo recibido con el día cerrado', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, receivedBy: 'operador@uno.local' })), false);
+  caso('encargado recibe arqueo con el día cerrado', await op(operador, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local', { receivedBy: 'operador@uno.local' })), false);
+  caso('bombero declara arqueo con el día cerrado', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local', { cash: 5 })), false);
+  // Turno abierto colado en un día cerrado (datos previos a esta regla): sus lecturas no se crean ni cambian.
+  const sid3 = `${fT}_${tpl}C`;
+  await owner('PATCH', `shifts/${sid3}`, { ...turnoDoc, templateId: `${tpl}C` });
+  await owner('PATCH', `shiftReadings/${sid3}_p1-A-1`, { shiftId: sid3, dispenserId: 'p1-A-1', date: fT, initialReading: 100 });
+  caso('operador crea lectura de turno en día cerrado', await op(operador, 'PATCH', `shiftReadings/${sid3}_p1-A-2`, { shiftId: sid3, dispenserId: 'p1-A-2', date: fT, initialReading: 100 }), false);
+  caso('operador guarda final de turno en día cerrado', await op(operador, 'PATCH', `shiftReadings/${sid3}_p1-A-1`, { shiftId: sid3, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 150 }), false);
+  caso('(prep) admin reabre el día', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso' }), true);
+  caso('operador abre turno con el día reabierto (turno + lecturas + diaria + puntero, como abrirTurno)', await abrir(operador, sid2, { ...turnoDoc, templateId: `${tpl}B` }, [
+    [`shiftReadings/${sid2}_p1-A-1`, { shiftId: sid2, dispenserId: 'p1-A-1', date: fT, initialReading: 150 }],
+    [`readings/${fT}_p1-A-9${run % 1000}`, { date: fT, dispenserId: `p1-A-9${run % 1000}`, initialReading: 150, fuelPrice: 34.05, status: 'activo' }],
+  ]), true);
+  caso('encargado corrige arqueo recibido con el día reabierto', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, receivedBy: 'operador@uno.local' })), true);
+  caso('consulta escribe puntero de turno', await op(consulta, 'PATCH', 'shiftState/actual', { openShiftId: null, lastShiftId: sid2 }), false);
+  caso('operador escribe puntero con otro id', await op(operador, 'PATCH', 'shiftState/otro', { testPing: run }), false);
+  caso('operador cierra el segundo turno', await cerrarT(operador, sid2, { ...turnoDoc, templateId: `${tpl}B` }), true);
+  caso('operador (sin canManagePumps) edita settings/operacion', await op(operador, 'PATCH', 'settings/operacion', { testPing: run }), false);
+  caso('admin edita settings/operacion', await op(admin, 'PATCH', 'settings/operacion', { testPing: run }), true);
+  // Tramos de la diaria (venta por turnos): forman parte de la venta, cambiarlos es corrección.
+  const rd = `readings/${fT}_tramos${run % 1000}`;
+  const diaria = { date: fT, initialReading: 10, finalReading: 20, fuelPrice: 34.05, status: 'activo', tramos: [{ litros: 10, precio: 34.05 }] };
+  caso('(prep) admin crea diaria con tramos', await op(admin, 'PATCH', rd, diaria), true);
+  caso('consulta cambia tramos de una final guardada', await op(consulta, 'PATCH', rd, { ...diaria, tramos: [{ litros: 10, precio: 1 }] }), false);
+  caso('admin corrige tramos de una final guardada', await op(admin, 'PATCH', rd, { ...diaria, tramos: [{ litros: 10, precio: 35 }] }), true);
+  // Restaura el puntero de la app local.
+  if (estadoPrevio.fields) {
+    await fetch(`${FS}/shiftState/actual`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' }, body: JSON.stringify({ fields: estadoPrevio.fields }),
+    });
+  } else await owner('DELETE', 'shiftState/actual');
+}
 
 // Limpieza: lo creado por las pruebas se borra con la credencial de administrador del emulador
 // (Bearer owner, ignora reglas) para no ensuciar la auditoría ni los datos de la app local.
 async function limpiar() {
-  for (const col of ['auditLog', 'readings', 'prices', 'dayStatus', 'users', 'roles']) {
+  for (const col of ['auditLog', 'readings', 'prices', 'dayStatus', 'users', 'roles', 'shifts', 'shiftReadings', 'cashCounts']) {
     const r = await fetch(`${FS}/${col}?pageSize=300`, { headers: { Authorization: 'Bearer owner' } });
     const j = await r.json();
     for (const d of j.documents || []) {
       const id = d.name.split('/').pop();
       const f = d.fields || {};
       const accion = f.action?.stringValue;
-      const deLaPrueba = id.includes(String(run)) || id.startsWith('test_') || id.startsWith('rvr') || id.startsWith('fake_')
+      const deLaPrueba = id.includes(String(run)) || id.startsWith('tramos_') || id.startsWith('rv019') || id.startsWith('test_') || id.startsWith('rvr') || id.startsWith('fake_')
         || id.startsWith('2099-') || id.startsWith('admin_test') || id.startsWith('hack') || id.startsWith('robo')
         || (col === 'auditLog' && ['x', 'Lectura', 'Cierre del día', 'y'].includes(accion ?? '') && !f.target);
       if (deLaPrueba) await fetch(`${FS}/${col}/${id}`, { method: 'DELETE', headers: { Authorization: 'Bearer owner' } });

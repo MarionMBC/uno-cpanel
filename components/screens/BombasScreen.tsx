@@ -14,6 +14,7 @@ import ConfirmDialog from '@/components/overlays/ConfirmDialog';
 import { FUELS } from '@/lib/constants';
 import { Pump, Dispenser } from '@/types';
 import { abiertasDeBomba, abiertaDeDispensador } from '@/lib/inventario';
+import ConfigTurnosCard from '@/components/turnos/ConfigTurnosCard';
 
 interface DispDraft { name: string; sn: string; status: 'activo' | 'inactivo' | 'mantenimiento'; fuelId: string; }
 
@@ -456,6 +457,9 @@ export default function BombasScreen() {
           </div>
         </div>
       </Modal>
+
+      {/* B1 (TASK-019): configuración de turnos (detrás de settings/operacion.shiftsEnabled). */}
+      <div style={{ gridColumn: '1 / -1' }}><ConfigTurnosCard /></div>
 
       <ConfirmDialog
         open={confirmDeactivate}

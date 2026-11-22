@@ -28,6 +28,10 @@ Los emuladores guardan en memoria: al reiniciarlos, correr `npm run seed:emu` de
 - **Bombas**: no se desactivan ni retiran mangueras con lecturas abiertas.
 - **Despliegue**: `npm run build` genera `out/` (export estático) → `firebase deploy --only hosting,firestore:rules`. Functions (`precioOficialSemanal`) requieren plan Blaze y `settings/precios.autoOficial = true`.
 
+## Turnos y cierre por bombero (opcional)
+
+Interruptor en Configuración bombas → Turnos (`settings/operacion.shiftsEnabled`, apagado por defecto: todo funciona por día como antes). Encendido: plantillas Mañana/Tarde/Noche, apertura de turno con asignación de bomberos a mangueras y fondo por bombero, lecturas por turno encadenadas (la final de un turno es la inicial del siguiente), corte de precio a mitad de turno, arqueo por bombero (efectivo, POS, créditos, retiros vs esperado), y el día solo se cierra con todos los turnos cerrados y arqueados. La lectura diaria guarda la venta por tramos de precio. Con turnos activos, Lectura inicial y final quedan en solo consulta.
+
 ## Precio oficial de referencia (SEN)
 
 Pantalla **Precio del combustible** → "Consultar precio oficial": la Secretaría de Energía fija precios máximos **semanales** (vigentes desde el lunes) solo para Tegucigalpa y San Pedro Sula, en L/galón. El panel lee desde el navegador las notas de Once Noticias y HCH (API pública de WordPress), extrae los precios de Tegucigalpa (`lib/preciosOficiales.ts`), los cruza entre fuentes, enlaza la imagen oficial de sen.hn y suma el **diferencial de Guaimaca** por producto (L/litro, `settings/precios`). "Usar estos precios" solo llena el formulario; si las fuentes no coinciden o el salto supera 15 % exige confirmar que se verificó en la imagen oficial. Nada se aplica solo.

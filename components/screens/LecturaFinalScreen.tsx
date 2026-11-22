@@ -19,6 +19,7 @@ import * as XLSX from 'xlsx';
 import {
   calcVenta, excedeTope, FilaFinal, filasLecturaFinal, lecturasPorDispensador, litrosEntre, LITROS_MAX_DIA, METER_RESOLUCION, rompeContinuidad, round, sumarVentas, Venta,
 } from '@/lib/totalizadores';
+import { bloqueoCierre } from '@/lib/turnosDb';
 
 const MOTIVO_MIN = 5;
 const fechaHN = (iso: string) => iso.split('-').reverse().join('/');
@@ -30,10 +31,12 @@ interface Correccion { fila: Fila; campo: 'inicial' | 'final'; valor: string; mo
 
 const msgInvalida = (v: Venta | null) => v?.motivo === 'tope'
   ? `Más de ${fmtNum(LITROS_MAX_DIA, 0)} L en una manguera en un día: revisa la lectura.`
-  : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
+  : v?.motivo === 'tramos'
+    ? 'Los litros de los turnos no cuadran con el totalizador: revisa las lecturas por turno.'
+    : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
 
 export default function LecturaFinalScreen() {
-  const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles, today } = useApp();
+  const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles, today, operacion } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -82,6 +85,8 @@ export default function LecturaFinalScreen() {
   const totalGal = totals.l / LITERS_PER_GALLON;
 
   const isClosed = dayStatus === 'cerrado';
+  // Con turnos activos las lecturas viven en Turnos (tramos por precio): aquí no se editan.
+  const conTurnos = operacion.shiftsEnabled;
   const conFinal = rows.filter(f => { const r = lecturaDe.get(f.id); return r?.status === 'mantenimiento' || r?.finalReading !== undefined; }).length;
 
   const etiqueta = (f: Fila) => `${f.pumpName} ${f.face}-${f.name.slice(-1)} (${f.fuelName})`;
@@ -203,12 +208,30 @@ export default function LecturaFinalScreen() {
     }
   };
 
-  const handleConfirmClick = () => {
+  /** B7 (TASK-019): con turnos activos, el día solo cierra con todos sus turnos cerrados y arqueados. */
+  const turnosImpidenCierre = async (): Promise<boolean> => {
+    if (!operacion.shiftsEnabled) return false;
+    let razones: string[];
+    try {
+      razones = await bloqueoCierre(today);
+    } catch (e) {
+      console.error(e);
+      toast.error('No se cerró el día', 'No se pudieron revisar los turnos del día.');
+      return true;
+    }
+    if (razones.length === 0) return false;
+    toast.error('Turnos pendientes', `${razones.slice(0, 3).join(' ')}${razones.length > 3 ? ` (+${razones.length - 3})` : ''} Revísalo en Turnos.`);
+    return true;
+  };
+
+  const handleConfirmClick = async () => {
     if (!puedeCerrar) return;
+    if (await turnosImpidenCierre()) return;
     if (prepararFinales(true)) setConfirmOpen(true);
   };
 
   const handleClose = async () => {
+    if (await turnosImpidenCierre()) { setConfirmOpen(false); return; }
     const finales = prepararFinales(true);
     if (!finales) return;
     const autor = appUser?.email || appUser?.name || 'unknown';
@@ -385,11 +408,16 @@ export default function LecturaFinalScreen() {
             <div style={{ fontSize: 12.5, color: '#cbd5e1', marginTop: 4 }}>Ingresa el totalizador final de cada dispensador y guárdalo; el cierre del día lo hace quien tiene permiso.</div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {!isClosed && <Button variant="accent" icon="check" onClick={handleGuardar} disabled={guardando}>Guardar lecturas finales</Button>}
+            {!isClosed && !conTurnos && <Button variant="accent" icon="check" onClick={handleGuardar} disabled={guardando}>Guardar lecturas finales</Button>}
             {botonCierre()}
           </div>
         </div>
       </Card>
+      {conTurnos && (
+        <div role="status" style={{ padding: '12px 16px', borderRadius: 12, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e3a8a', fontSize: 13 }}>
+          <strong>Turnos activos:</strong> las lecturas se registran y corrigen por turno en la pantalla «Turnos». Aquí solo se consultan.
+        </div>
+      )}
 
       <div className="grid-cols-4">
         <StatCard tone="primary" label="Total lempiras" icon="fuel" value={fmtL(totals.m)} sub="estimado del día"/>
@@ -406,7 +434,7 @@ export default function LecturaFinalScreen() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <Button variant="secondary" icon="download" size="sm" onClick={exportExcel}>Excel</Button>
-            {!isClosed && <Button variant="accent" size="sm" icon="check" onClick={handleGuardar} disabled={guardando}>Guardar</Button>}
+            {!isClosed && !conTurnos && <Button variant="accent" size="sm" icon="check" onClick={handleGuardar} disabled={guardando}>Guardar</Button>}
             {botonCierre('sm')}
           </div>
         </div>
@@ -458,7 +486,7 @@ export default function LecturaFinalScreen() {
                               // Valor nuevo: la vuelta a cero marcada se vuelve a confirmar.
                               setRollEdits(s => { if (s[f.id] === undefined) return s; const x = { ...s }; delete x[f.id]; return x; });
                             }}
-                            disabled={isClosed || !r || guardada}
+                            disabled={isClosed || conTurnos || !r || guardada}
                             title={guardada ? (puedeCerrar ? 'Final guardada: cámbiala con Corregir (con motivo)' : 'Final guardada: solo quien puede cerrar el día la corrige') : undefined}
                             style={{
                               width: 120, padding: '6px 8px', textAlign: 'right',
@@ -490,7 +518,7 @@ export default function LecturaFinalScreen() {
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: '#475569' }}>L. {(v?.precio ?? 0).toFixed(2)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 800, color: ok ? '#0f172a' : '#94a3b8' }}>{ok ? fmtL(v.total) : '-'}</td>
                     <td style={{ padding: '10px 8px', textAlign: 'right' }}>
-                      {puedeCerrar && r && !isMant && (
+                      {puedeCerrar && r && !isMant && !conTurnos && (
                         <button
                           onClick={() => setCorr({ fila: f, campo: r.finalReading !== undefined ? 'final' : 'inicial', valor: '', motivo: '', rollover: r.rollover === true })}
                           title="Corregir lectura (con motivo)"

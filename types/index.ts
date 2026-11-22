@@ -65,6 +65,18 @@ export interface DailyReading {
   previousFinal?: number;
   /** Motivo de la diferencia de continuidad. */
   continuityReason?: string;
+  /**
+   * Con turnos (TASK-019): tramos vendidos en el día (uno por tramo de cada turno cerrado, a su precio).
+   * Si existen, la venta del día es su suma y no final − inicial × fuelPrice.
+   */
+  tramos?: TramoVenta[];
+}
+
+/** Litros vendidos a un precio (tramo de un turno). */
+export interface TramoVenta {
+  litros: number;
+  precio: number;
+  shiftId?: string;
 }
 
 export interface FuelReceipt {
@@ -203,3 +215,126 @@ export interface AppUser {
 }
 
 export type DayStatusValue = 'pendiente' | 'en_proceso' | 'cerrado';
+
+// ─── Turnos y arqueo por bombero (TASK-019, detrás de settings/operacion.shiftsEnabled) ──────────
+
+/** Plantilla de turno. `start`/`end` en HH:MM hora de la estación; si end <= start, cruza la medianoche. */
+export interface PlantillaTurno {
+  id: string;
+  name: string;
+  start: string;
+  end: string;
+}
+
+/** settings/operacion */
+export interface Operacion {
+  timeZone: string;
+  /** Flag: false = comportamiento de siempre (una lectura por manguera y día, sin turnos). */
+  shiftsEnabled: boolean;
+  shiftTemplates: PlantillaTurno[];
+}
+
+/** Bombero asignado a mangueras en un turno, con su fondo de cambio. */
+export interface AsignacionTurno {
+  email: string;
+  name: string;
+  dispenserIds: string[];
+  /** Fondo de cambio entregado al bombero (L). */
+  cashFund: number;
+}
+
+/** Corte de precio a mitad de turno: el tramo que termina en `price` se valoriza a `oldPrices`. */
+export interface CortePrecio {
+  at: string;
+  by: string;
+  oldPrices: Record<string, number>;
+  newPrices: Record<string, number>;
+}
+
+/** shifts/{fecha}_{turnoId} */
+export interface Shift {
+  id?: string;
+  /** Día operativo al que pertenece (el turno nocturno cae al día en que empezó). */
+  date: string;
+  templateId: string;
+  name: string;
+  status: 'abierto' | 'cerrado';
+  openedBy: string;
+  openedByName: string;
+  openedAt: string;
+  closedBy?: string;
+  closedByName?: string;
+  closedAt?: string;
+  /** Precios por litro vigentes en el tramo actual del turno (snapshot al abrir o al cortar). */
+  prices: Record<string, number>;
+  prevShiftId?: string | null;
+  assignments: AsignacionTurno[];
+  /** Correos de los bomberos (las reglas lo usan para dejar que cada uno declare su arqueo). */
+  attendantEmails: string[];
+  dispenserIds: string[];
+  priceCuts?: CortePrecio[];
+}
+
+/** Lectura de corte: totalizador al cortar el precio y precio del tramo anterior. */
+export interface CorteLectura {
+  reading: number;
+  fuelPrice: number;
+  at: string;
+}
+
+/** shiftReadings/{shiftId}_{dispenserId} */
+export interface ShiftReading {
+  id?: string;
+  shiftId: string;
+  date: string;
+  dispenserId: string;
+  dispenserName: string;
+  face: string;
+  pumpId: string;
+  pumpName: string;
+  fuelId: string;
+  fuelName: string;
+  /** Precio por litro del último tramo (desde la apertura o el último corte). */
+  fuelPrice: number;
+  initialReading: number;
+  finalReading?: number;
+  status: 'activo' | 'mantenimiento';
+  rollover?: boolean;
+  meterMax?: number;
+  attendantEmail: string;
+  attendantName: string;
+  /** Final del mismo dispensador en el turno anterior (encadenamiento). */
+  previousFinal?: number | null;
+  continuityBreak?: boolean;
+  continuityReason?: string;
+  cuts?: CorteLectura[];
+}
+
+/** cashCounts/{shiftId}_{bomberoEmail} */
+export interface CashCount {
+  id?: string;
+  shiftId: string;
+  date: string;
+  email: string;
+  name: string;
+  /** Ventas de sus mangueras (calcVenta por tramo). */
+  expectedSales: number;
+  cashFund: number;
+  /** expectedSales + cashFund. */
+  expected: number;
+  cash: number;
+  card: number;
+  credits: number;
+  partialDrops: number;
+  /** cash + card + credits + partialDrops. */
+  declared: number;
+  /** declared − expected (negativo = falta). */
+  difference: number;
+  status: 'conforme' | 'con_diferencia';
+  notes?: string;
+  declaredBy: string;
+  declaredAt: string;
+  /** Recibido/validado por quien puede cerrar el día: el turno queda arqueado. */
+  receivedBy?: string;
+  receivedAt?: string;
+}
