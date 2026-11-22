@@ -81,7 +81,18 @@ caso('colección desconocida', await op(admin, 'GET', 'secretos/x'), false);
 // Review r1 de TASK-006
 const consulta = await token('consulta@uno.local');
 caso('consulta (sin canCloseDay) cambia inicial ya registrada', await op(consulta, 'PATCH', `readings/test_op_${futuro}`, { date: futuro, initialReading: 50, finalReading: 110 }), false);
-caso('consulta guarda final sin cambiar inicial', await op(consulta, 'PATCH', `readings/test_op_${futuro}`, { date: futuro, initialReading: 100, finalReading: 120 }), true);
+// TASK-010: una final ya guardada solo la cambia quien tiene canCloseDay (corrección con motivo).
+const fin = `test_fin_${run}_${futuro}`;
+caso('operador abre lectura sin final', await op(operador, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100 }), true);
+caso('consulta guarda final en lectura sin final', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 120 }), true);
+caso('consulta reescribe la misma final (sin cambio)', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 120 }), true);
+caso('consulta (sin canCloseDay) cambia final ya guardada', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 130 }), false);
+caso('consulta marca vuelta a cero con final guardada', await op(consulta, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 120, rollover: true }), false);
+{ // borrar el campo finalReading
+  const r = await fetch(`${FS}/readings/${fin}?updateMask.fieldPaths=finalReading`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${consulta}` }, body: JSON.stringify({ fields: {} }) });
+  caso('consulta borra final ya guardada', r.status, false);
+}
+caso('admin (canCloseDay) corrige final ya guardada', await op(admin, 'PATCH', `readings/${fin}`, { date: futuro, initialReading: 100, finalReading: 130 }), true);
 { const st = await op(operador, 'GET', 'prices_official/2026-11-23'); caso('operador lee sugerencia oficial (404 = permitido sin doc)', st === 404 ? 200 : st, true); }
 caso('admin escribe sugerencia oficial desde cliente', await op(admin, 'PATCH', 'prices_official/x', { a: 1 }), false);
 caso('operador lee ficha ajena', await op(operador, 'GET', 'users/admin@uno.local'), false);

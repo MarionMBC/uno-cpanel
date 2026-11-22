@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildCuadro, calcVenta, finalAnterior, idLectura, lecturasPorDispensador, litrosEntre, METER_MAX_DEFAULT, rompeContinuidad,
+  buildCuadro, calcVenta, filasLecturaFinal, finalAnterior, idLectura, lecturasPorDispensador, litrosEntre, LITROS_MAX_DIA,
+  METER_MAX_DEFAULT, rompeContinuidad, sumarVentas,
 } from './totalizadores.ts';
 import type { DailyReading, Dispenser, Pump } from '../types';
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 const PRECIOS = { diesel: 34.05, super: 37.76, regular: 37.06 };
 
@@ -47,10 +50,14 @@ test('calcVenta: mismo total que el cuadro al centavo', () => {
 });
 
 // ─── Rollover (A7) ───
-test('rollover: litros = final + meterMax − inicial', () => {
-  assert.equal(litrosEntre(999850, 120, true), 269.999);
-  assert.equal(litrosEntre(999850, 120, true, 1000000), 270);
+test('rollover: litros = final + (meterMax + 0.001) − inicial, exacto (módulo 1 000 000)', () => {
   assert.equal(METER_MAX_DEFAULT, 999999.999);
+  assert.equal(litrosEntre(999850, 120, true), 270);
+  // Un solo paso del contador: 999999.999 → 000000.000 es 0.001 L.
+  assert.equal(litrosEntre(999999.999, 0, true), 0.001);
+  assert.equal(litrosEntre(999999.5, 0.5, true), 1);
+  // Equivale a (final − inicial) mod 1 000 000.
+  assert.equal(litrosEntre(999850.123, 120.456, true), 270.333);
 });
 
 test('rollover: sin vuelta real (final ≥ inicial) o inicial > máximo es inválido', () => {
@@ -60,7 +67,7 @@ test('rollover: sin vuelta real (final ≥ inicial) o inicial > máximo es invá
 });
 
 test('rollover: calcVenta y cuadro respetan el flag', () => {
-  const r = lectura({ initialReading: 999850, finalReading: 120, rollover: true, meterMax: 1000000, fuelPrice: 37.06 });
+  const r = lectura({ initialReading: 999850, finalReading: 120, rollover: true, fuelPrice: 37.06 });
   assert.deepEqual(calcVenta(r, PRECIOS), { estado: 'ok', litros: 270, precio: 37.06, total: 10006.2 });
   const c = buildCuadro([pump('p1', 'Bomba 01', [[disp('p1', 'A', 1, 'regular')]])], [r], PRECIOS);
   assert.equal(c.grupos[0].filas[0].estado, 'ok');
@@ -122,7 +129,9 @@ test('histórico: bomba inactiva hoy no oculta ventas pasadas', () => {
     lectura({ dispenserId: 'p2-A-1', pumpId: 'p2', pumpName: 'Bomba 02', initialReading: 0, finalReading: 5, fuelPrice: 37.06 }),
   ];
   const hoy = buildCuadro(pumps, rs, PRECIOS);
-  assert.equal(hoy.grupos[1].filas[0].estado, 'mantenimiento');
+  // Con lectura del día manda la lectura, aunque la bomba esté inactiva hoy (TASK-009).
+  assert.equal(hoy.grupos[1].filas[0].estado, 'ok');
+  assert.equal(hoy.total, 555.9);
   const pasado = buildCuadro(pumps, rs, PRECIOS, { historico: true });
   assert.deepEqual(pasado.grupos.map(g => g.pumpName), ['Bomba 01', 'Bomba 02']);
   assert.equal(pasado.grupos[1].filas[0].estado, 'ok');
@@ -150,4 +159,61 @@ test('hoy: lectura de un dispensador borrado sigue sumando', () => {
 test('lecturas sin dispensador no aparecen en el cuadro', () => {
   const m = lecturasPorDispensador([{ id: 'x', date: '2026-11-21', dispenserId: '' } as never, { id: 'y', date: '2026-11-21', dispenserId: 'p1-A-1' } as never]);
   assert.equal(m.size, 1);
+});
+
+// ─── Tope de plausibilidad (A7 / TASK-012 review) ───
+test('tope: más de LITROS_MAX_DIA en una manguera es inválida (motivo tope)', () => {
+  assert.equal(LITROS_MAX_DIA, 20000);
+  // Final menor digitada por error + "vuelta a cero" → ~999 900 L: se bloquea.
+  const v = calcVenta(lectura({ initialReading: 500, finalReading: 400, rollover: true, fuelPrice: 37.06 }), PRECIOS);
+  assert.equal(v.estado, 'invalida');
+  assert.equal(v.motivo, 'tope');
+  assert.equal(v.total, 0);
+  assert.equal(calcVenta(lectura({ initialReading: 0, finalReading: 20000.001, fuelPrice: 1 }), PRECIOS).motivo, 'tope');
+  assert.equal(calcVenta(lectura({ initialReading: 0, finalReading: 20000, fuelPrice: 1 }), PRECIOS).estado, 'ok');
+  assert.equal(calcVenta(lectura({ finalReading: 50 }), PRECIOS).motivo, 'menor');
+  const c = buildCuadro([pump('p1', 'Bomba 01', [[disp('p1', 'A', 1, 'regular')]])], [lectura({ initialReading: 500, finalReading: 400, rollover: true })], PRECIOS);
+  assert.equal(c.invalidas, 1);
+  assert.equal(c.total, 0);
+});
+
+// ─── Mismo total en Cuadro, Lectura final y Dashboard (TASK-009 review) ───
+test('bomba desactivada / dispensador borrado con final guardada: mismo total en las 3 vistas', () => {
+  const pumps = [
+    pump('p1', 'Bomba 01', [[disp('p1', 'A', 1, 'regular'), disp('p1', 'A', 2, 'super', 'mantenimiento')]]),
+    pump('p2', 'Bomba 02', [[disp('p2', 'A', 1, 'regular'), disp('p2', 'A', 2, 'diesel', 'inactivo')]], false),
+  ];
+  const rs = [
+    lectura({ id: idLectura('2026-11-20', 'p1-A-1'), dispenserId: 'p1-A-1', initialReading: 0, finalReading: 10, fuelPrice: 37.06 }),
+    // Dispensador pasado a mantenimiento después de guardar la final.
+    lectura({ id: idLectura('2026-11-20', 'p1-A-2'), dispenserId: 'p1-A-2', fuelId: 'super', initialReading: 0, finalReading: 4, fuelPrice: 37.76 }),
+    // Bomba desactivada después de guardar la final.
+    lectura({ id: idLectura('2026-11-20', 'p2-A-1'), dispenserId: 'p2-A-1', pumpId: 'p2', pumpName: 'Bomba 02', initialReading: 10, finalReading: 20, fuelPrice: 100 }),
+    // Dispensador inactivo con lectura.
+    lectura({ id: idLectura('2026-11-20', 'p2-A-2'), dispenserId: 'p2-A-2', pumpId: 'p2', pumpName: 'Bomba 02', fuelId: 'diesel', initialReading: 0, finalReading: 2, fuelPrice: 34.05 }),
+    // Dispensador borrado de la configuración.
+    lectura({ id: idLectura('2026-11-20', 'p9-B-1'), dispenserId: 'p9-B-1', pumpId: 'p9', pumpName: 'Bomba 09', face: 'B', initialReading: 0, finalReading: 1, fuelPrice: 50 }),
+  ];
+  const esperado = { litros: 27, total: round2(370.6 + 151.04 + 1000 + 68.1 + 50) };
+
+  const cuadro = buildCuadro(pumps, rs, PRECIOS);
+  assert.deepEqual({ litros: cuadro.litros, total: cuadro.total }, esperado);
+
+  // Lectura final: filas = operables ∪ con lectura de hoy; total = sumarVentas de sus lecturas.
+  const filas = filasLecturaFinal(pumps, rs);
+  assert.deepEqual(filas.map(f => f.id).sort(), ['p1-A-1', 'p1-A-2', 'p2-A-1', 'p2-A-2', 'p9-B-1']);
+  const porDisp = lecturasPorDispensador(rs);
+  const final = sumarVentas(filas.map(f => porDisp.get(f.id)).filter((r): r is DailyReading => !!r), PRECIOS);
+  assert.deepEqual(final, esperado);
+
+  // Dashboard: sumarVentas de una lectura por dispensador.
+  assert.deepEqual(sumarVentas(porDisp.values(), PRECIOS), esperado);
+});
+
+test('filasLecturaFinal: sin lectura, solo operables (bomba activa y dispensador no inactivo)', () => {
+  const pumps = [
+    pump('p1', 'Bomba 01', [[disp('p1', 'A', 1, 'regular'), disp('p1', 'A', 2, 'super', 'inactivo'), disp('p1', 'A', 3, 'diesel', 'mantenimiento')]]),
+    pump('p2', 'Bomba 02', [[disp('p2', 'A', 1, 'regular')]], false),
+  ];
+  assert.deepEqual(filasLecturaFinal(pumps, []).map(f => f.id), ['p1-A-1', 'p1-A-3']);
 });
