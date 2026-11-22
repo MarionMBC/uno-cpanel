@@ -1,7 +1,14 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 import { useApp } from '@/contexts/AppContext';
+import { useToast } from '@/contexts/ToastContext';
+import { DailyReading } from '@/types';
+import { rangoDias, ventasPorDia } from '@/lib/reportes';
+import { fechaCortaHN } from '@/lib/fecha';
+import * as XLSX from 'xlsx';
 import Card from '@/components/ui/Card';
 import StatCard from '@/components/ui/StatCard';
 import Badge from '@/components/ui/Badge';
@@ -12,25 +19,33 @@ import { LITERS_PER_GALLON, productosDeBomba } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
 import { calcVenta, lecturasPorDispensador, round } from '@/lib/totalizadores';
 
-const TREND_14D = (() => {
-  const arr = [];
-  for (let i = 13; i >= 0; i--) {
-    arr.push({
-      day: i,
-      liters: 0,
-      lempiras: 0,
-    });
-  }
-  return arr;
-})();
+const DIAS_TENDENCIA = 14;
 
 interface DashboardScreenProps {
   setRoute: (r: string) => void;
 }
 
 export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
-  const { pumps, auditLog, dayStatus, readings, roles, currentPrices } = useApp();
+  const { pumps, auditLog, readings, roles, currentPrices, today: hoy } = useApp();
   const { user, appUser } = useAuth();
+  const toast = useToast();
+
+  // Ventas reales de los últimos 14 días: días pasados por rango de `date` (índice simple, sin compuesto);
+  // el día de hoy sale en vivo del contexto.
+  const dias = useMemo(() => rangoDias(hoy, DIAS_TENDENCIA), [hoy]);
+  const [pasadas, setPasadas] = useState<{ desde: string; lecturas: DailyReading[] } | null>(null);
+  const [errorTendencia, setErrorTendencia] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    getDocs(query(collection(db, 'readings'), where('date', '>=', dias[0]), where('date', '<', hoy)))
+      .then(snap => { if (vivo) { setPasadas({ desde: dias[0], lecturas: snap.docs.map(d => ({ id: d.id, ...d.data() } as DailyReading)) }); setErrorTendencia(false); } })
+      .catch(e => { console.warn('Sin tendencia:', e); if (vivo) setErrorTendencia(true); });
+    return () => { vivo = false; };
+  }, [dias, hoy]);
+  const tendencia = useMemo(
+    () => ventasPorDia([...(pasadas?.desde === dias[0] ? pasadas.lecturas : []), ...readings.filter(r => r.date === hoy)], dias, currentPrices),
+    [pasadas, readings, dias, hoy, currentPrices],
+  );
 
   const name = appUser?.name || user?.displayName?.split(' ')[0] || 'Usuario';
   const role = roles.find(r => r.id === appUser?.roleId);
@@ -54,8 +69,24 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
   const completedFinals = readings.filter(r => r.status === 'activo' && r.finalReading !== undefined).length;
   const pendingFinals = Math.max(0, totalActiveDispensers - completedFinals);
 
-  const trendM = TREND_14D.map(d => d.lempiras);
-  const maxV = Math.max(...trendM, 1); // fallback to 1 to avoid NaN
+  const maxV = Math.max(...tendencia.map(d => d.total), 1); // 1 evita dividir entre 0
+  const totalTendencia = tendencia.reduce((a, d) => a + d.total, 0);
+
+  const exportExcel = () => {
+    const rows = tendencia.map(d => ({
+      'Fecha': fechaCortaHN(d.fecha),
+      'Litros': d.litros,
+      'Galones': round(d.litros / LITERS_PER_GALLON, 2),
+      'Total L.': d.total,
+      'Lecturas pendientes': d.pendientes,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Ventas 14 días');
+    const nombre = `Ventas_${dias[0]}_a_${hoy}.xlsx`;
+    XLSX.writeFile(wb, nombre);
+    toast.success('Excel exportado', `${nombre} descargado.`);
+  };
 
   const ALL_QUICK_ACTIONS = [
     { l: 'Lectura inicial', i: 'log-in', r: 'lectura-inicial', c: '#16a34a' },
@@ -89,7 +120,7 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignSelf: 'stretch', flexWrap: 'wrap' }}>
-          <Button variant="secondary" icon="download">Exportar Excel</Button>
+          <Button variant="secondary" icon="download" onClick={exportExcel}>Exportar Excel</Button>
           <Button variant="primary" icon="log-out" onClick={() => setRoute('lectura-final')}>Registrar lectura final</Button>
         </div>
       </div>
@@ -99,7 +130,7 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
         <StatCard tone="primary" label="Vendido hoy" icon="fuel" value={fmtL(totals.lempiras)} sub="estimado"/>
         <StatCard tone="neutral" label="Litros vendidos" icon="droplet" value={fmtNum(totals.liters, 2)} sub="L · hoy"/>
         <StatCard tone="neutral" label="Galones vendidos" icon="droplet" value={fmtNum(totals.gallons, 2)} sub="gal · hoy"/>
-        <StatCard tone="accent" label="Bombas activas" icon="gauge" value={`${activePumps.length} / ${pumps.length}`} sub={`${pumps.length - activePumps.length} en mantenimiento`}/>
+        <StatCard tone="accent" label="Bombas activas" icon="gauge" value={`${activePumps.length} / ${pumps.length}`} sub={`${pumps.length - activePumps.length} inactiva${pumps.length - activePumps.length !== 1 ? 's' : ''}`}/>
       </div>
 
       {/* Trend + quick actions */}
@@ -109,20 +140,20 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
             <div>
               <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', fontWeight: 700, letterSpacing: 0.5 }}>Ventas · últimos 14 días</div>
               <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', letterSpacing: -0.3, marginTop: 4 }}>
-                {fmtL(trendM.reduce((a, b) => a + b, 0))}
+                {fmtL(totalTendencia)}
               </div>
+              {errorTendencia && <div style={{ fontSize: 11, color: '#b45309', marginTop: 2 }}>No se pudieron cargar los días anteriores; solo se muestra hoy.</div>}
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
-              <Badge tone="success" dot>Lempiras</Badge>
-              <Badge tone="neutral" dot>Litros</Badge>
+              <Badge tone="success" dot>Lempiras por día</Badge>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 140, marginTop: 12 }}>
-            {TREND_14D.map((d, i) => {
-              const h = (d.lempiras / maxV) * 100;
-              const isToday = i === TREND_14D.length - 1;
+            {tendencia.map((d, i) => {
+              const h = (d.total / maxV) * 100;
+              const isToday = i === tendencia.length - 1;
               return (
-                <div key={i} style={{ flex: 1, alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                <div key={d.fecha} title={`${fechaCortaHN(d.fecha)} · ${fmtL(d.total)} · ${fmtNum(d.litros, 2)} L${d.pendientes ? ` · ${d.pendientes} pendiente(s)` : ''}`} style={{ flex: 1, alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                   <div style={{
                     width: '100%', height: `${Math.max(1, h)}%`,
                     background: isToday ? '#d97706' : '#0f1f3d',
@@ -130,7 +161,7 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
                     opacity: isToday ? 1 : 0.85,
                   }}/>
                   <span style={{ fontSize: 9.5, color: '#94a3b8', fontFamily: 'ui-monospace, monospace' }}>
-                    {String(today.getDate() - (TREND_14D.length - 1 - i)).padStart(2, '0')}
+                    {d.fecha.slice(8, 10)}
                   </span>
                 </div>
               );
@@ -170,10 +201,11 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
         <div className="grid-cols-3">
           {pumps.map((p) => {
             const allRows = p.faces.flatMap(f => f.dispensers);
-            const pumpReadings = readings.filter(r => r.pumpId === p.id);
-            const liters = pumpReadings.reduce((s, r) => s + (r.finalReading !== undefined ? Math.max(0, r.finalReading - r.initialReading) : 0), 0);
-            // Cada manguera puede despachar otro producto: usar el precio de su lectura, no el de la bomba.
-            const lemp = pumpReadings.reduce((s, r) => s + (r.finalReading !== undefined ? Math.max(0, r.finalReading - r.initialReading) * r.fuelPrice : 0), 0);
+            const pumpReadings = [...lecturasPorDispensador(readings).values()].filter(r => r.pumpId === p.id);
+            // Mismo cálculo que el Cuadro (calcVenta, precio de la lectura): rollover y redondeo incluidos.
+            let liters = 0, lemp = 0;
+            pumpReadings.forEach(r => { const v = calcVenta(r, currentPrices); if (v.estado === 'ok') { liters += v.litros; lemp += v.total; } });
+            liters = round(liters, 3); lemp = round(lemp, 2);
             const completed = pumpReadings.filter(r => r.finalReading !== undefined).length;
             
             return (
