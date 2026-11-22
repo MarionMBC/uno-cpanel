@@ -33,7 +33,7 @@ function EstadoBadge({ f }: { f: FilaCuadro }) {
 }
 
 export default function TotalizadoresScreen() {
-  const { pumps, readings, currentPrices, dayData, roles, today } = useApp();
+  const { pumps, readings, currentPrices, dayData, roles, today, addAuditEntry } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   // El value de ToastProvider cambia en cada render: usarlo vía ref evita relanzar la carga.
@@ -103,6 +103,10 @@ export default function TotalizadoresScreen() {
         setOtro(o => (o && o.fecha === f ? { ...o, dia: { ...(o.dia || { date: f, status: 'en_proceso' }), cashFund: fondo } } : o));
       }
       setFondoTxt(null);
+      addAuditEntry({
+        action: 'Fondo de cambio', target: fechaHN(f), detail: 'Fondo de caja del día', icon: 'edit',
+        before: fmtL(fondoGuardado), after: fmtL(fondo),
+      }).catch(e => console.warn('Auditoría no registrada:', e));
       toast.success('Fondo de cambio guardado', `${fmtL(fondo)} para el ${fechaHN(f)}.`);
     } catch {
       toast.error('No se guardó', 'Revisa la conexión e intenta de nuevo.');

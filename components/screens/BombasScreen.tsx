@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { useApp } from '@/contexts/AppContext';
-import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import Card from '@/components/ui/Card';
 import Badge from '@/components/ui/Badge';
@@ -19,8 +18,7 @@ import { abiertasDeBomba, abiertaDeDispensador } from '@/lib/inventario';
 interface DispDraft { name: string; sn: string; status: 'activo' | 'inactivo' | 'mantenimiento'; fuelId: string; }
 
 export default function BombasScreen() {
-  const { pumps, setPumps, addAuditEntry, roles, readings } = useApp();
-  const { appUser } = useAuth();
+  const { pumps, setPumps, addAuditEntry, readings } = useApp();
   const toast = useToast();
   const [picked, setPicked] = useState(pumps[0]?.id || '');
   const pump = pumps.find(p => p.id === picked) || pumps[0];
@@ -52,30 +50,37 @@ export default function BombasScreen() {
     return true;
   };
 
-  const toggleActive = () => {
+  /** Guarda la configuración y deja rastro en auditoría (la auditoría no bloquea la operación). */
+  const guardarBombas = async (nuevas: Pump[], audit: { action: string; target: string; detail: string; icon: string; before?: string; after?: string }) => {
+    try {
+      await setPumps(nuevas);
+    } catch (e) {
+      console.error(e);
+      toast.error('No se guardó', 'Revise la conexión o sus permisos e intente de nuevo.');
+      return false;
+    }
+    addAuditEntry(audit).catch(e => console.warn('Auditoría no registrada:', e));
+    return true;
+  };
+  const descDisp = (d: Pick<Dispenser, 'name' | 'fuelName' | 'status'>) => `${d.name} · ${d.fuelName} · ${d.status}`;
+
+  const toggleActive = async () => {
     if (pump.isActive && bloqueoBomba()) return;
-    setPumps(pumps.map(p => p.id === pump.id ? { ...p, isActive: !p.isActive } : p));
-    toast.success(`${pump.name} ${pump.isActive ? 'desactivada' : 'activada'}`);
-  };
-
-  const saveChanges = () => {
-    setPumps(pumps.map(p => p.id === pump.id ? { ...p, name: pumpName } : p));
-    const roleName = roles.find(r => r.id === appUser?.roleId)?.name || 'Desconocido';
-    addAuditEntry({
-      timestamp: new Date().toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' }),
-      date: new Date().toLocaleDateString('es-HN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
-      userId: appUser?.uid || 'unknown',
-      userName: appUser?.name || 'Sistema',
-      userRole: roleName,
-      action: 'Edición',
-      target: pump.name,
-      detail: 'Configuración actualizada',
-      icon: 'edit',
+    const ok = await guardarBombas(pumps.map(p => p.id === pump.id ? { ...p, isActive: !p.isActive } : p), {
+      action: pump.isActive ? 'Bomba desactivada' : 'Bomba activada', target: pump.name, detail: 'Estado de la bomba',
+      icon: 'fuel', before: pump.isActive ? 'activa' : 'inactiva', after: pump.isActive ? 'inactiva' : 'activa',
     });
-    toast.success('Cambios guardados', `${pumpName} actualizada correctamente.`);
+    if (ok) toast.success(`${pump.name} ${pump.isActive ? 'desactivada' : 'activada'}`);
   };
 
-  const createPump = () => {
+  const saveChanges = async () => {
+    const ok = await guardarBombas(pumps.map(p => p.id === pump.id ? { ...p, name: pumpName } : p), {
+      action: 'Edición de bomba', target: pump.name, detail: 'Nombre de la bomba', icon: 'edit', before: pump.name, after: pumpName,
+    });
+    if (ok) toast.success('Cambios guardados', `${pumpName} actualizada correctamente.`);
+  };
+
+  const createPump = async () => {
     if (!pumpDraft.name.trim()) { toast.error('Falta el nombre', 'Ingresa un nombre para la bomba.'); return; }
     if (pumpDraft.fuels.length === 0) { toast.error('Falta combustible', 'Selecciona al menos un combustible permitido.'); return; }
     
@@ -105,13 +110,15 @@ export default function BombasScreen() {
         }),
       })),
     };
-    setPumps([...pumps, newPump]);
+    if (!await guardarBombas([...pumps, newPump], {
+      action: 'Bomba creada', target: newPump.name, detail: `6 dispensadores · ${selectedFuels.map(f => f.name).join(' / ')}`, icon: 'plus',
+    })) return;
     setNewPumpOpen(false);
     setPicked(newPump.id);
     toast.success('Bomba creada', `${pumpDraft.name} agregada con 6 dispensadores.`);
   };
 
-  const updateDispenser = () => {
+  const updateDispenser = async () => {
     if (!editDispenser) return;
     const selectedFuel = FUELS.find(f => f.id === dispDraft.fuelId) || FUELS[0];
     const actual = pump.faces.find(f => f.id === editDispenser.face)?.dispensers.find(d => d.id === editDispenser.id);
@@ -120,7 +127,7 @@ export default function BombasScreen() {
     const cambiaCombustible = !!actual && actual.fuel !== selectedFuel.id;
     if ((sacaDeOperacion || cambiaCombustible) && actual
       && bloqueoDispensador(actual.id, actual.name, sacaDeOperacion ? 'cambiarle el estado' : 'cambiarle el combustible')) return;
-    setPumps(pumps.map(p => p.id === pump.id ? {
+    const nuevas = pumps.map(p => p.id === pump.id ? {
       ...p,
       faces: p.faces.map(f => f.id === editDispenser.face ? {
         ...f,
@@ -133,12 +140,17 @@ export default function BombasScreen() {
           fuelColor: selectedFuel.color,
         } : d),
       } : f),
-    } : p));
+    } : p);
+    if (!await guardarBombas(nuevas, {
+      action: 'Edición de dispensador', target: `${pump.name} cara ${editDispenser.face}`, detail: 'Nombre, combustible o estado', icon: 'edit',
+      before: actual ? descDisp(actual) : undefined,
+      after: descDisp({ name: dispDraft.name, fuelName: selectedFuel.name, status: dispDraft.status }),
+    })) return;
     setEditDispenser(null);
     toast.success('Dispensador actualizado', `${dispDraft.name} guardado correctamente.`);
   };
 
-  const addDispenser = () => {
+  const addDispenser = async () => {
     if (!addDispenserFace) return;
     const faceDisps = pump.faces.find(f => f.id === addDispenserFace)?.dispensers || [];
     const selectedFuel = FUELS.find(f => f.id === dispDraft.fuelId) || FUELS[0];
@@ -154,24 +166,30 @@ export default function BombasScreen() {
       status: 'activo',
       serialNumber: dispDraft.sn,
     };
-    setPumps(pumps.map(p => p.id === pump.id ? {
+    if (!await guardarBombas(pumps.map(p => p.id === pump.id ? {
       ...p,
       faces: p.faces.map(f => f.id === addDispenserFace ? { ...f, dispensers: [...f.dispensers, newDisp] } : f),
-    } : p));
+    } : p), {
+      action: 'Dispensador agregado', target: `${pump.name} cara ${addDispenserFace}`, detail: descDisp(newDisp), icon: 'plus', after: descDisp(newDisp),
+    })) return;
     setAddDispenserFace(null);
     toast.success('Dispensador agregado', `${newDisp.name} disponible para registrar lecturas.`);
   };
 
-  const deleteDispenser = () => {
+  const deleteDispenser = async () => {
     if (!confirmDelDisp) return;
     if (bloqueoDispensador(confirmDelDisp.id, confirmDelDisp.name, 'eliminarlo')) return;
-    setPumps(pumps.map(p => p.id === pump.id ? {
+    const actual = pump.faces.find(f => f.id === confirmDelDisp.face)?.dispensers.find(d => d.id === confirmDelDisp.id);
+    if (!await guardarBombas(pumps.map(p => p.id === pump.id ? {
       ...p,
       faces: p.faces.map(f => f.id === confirmDelDisp.face ? {
         ...f,
         dispensers: f.dispensers.filter(d => d.id !== confirmDelDisp.id),
       } : f),
-    } : p));
+    } : p), {
+      action: 'Dispensador eliminado', target: `${pump.name} cara ${confirmDelDisp.face}`, detail: confirmDelDisp.name, icon: 'trash',
+      before: actual ? descDisp(actual) : confirmDelDisp.name,
+    })) return;
     toast.error('Dispensador eliminado', `${confirmDelDisp.name} fue removido permanentemente.`);
   };
 
@@ -446,9 +464,11 @@ export default function BombasScreen() {
         confirmLabel="Sí, desactivar"
         cancelLabel="Mantener activa"
         icon="alert" tone="danger"
-        onConfirm={() => {
+        onConfirm={async () => {
           if (bloqueoBomba()) return;
-          setPumps(pumps.map(p => p.id === pump.id ? { ...p, isActive: false } : p));
+          if (!await guardarBombas(pumps.map(p => p.id === pump.id ? { ...p, isActive: false } : p), {
+            action: 'Bomba desactivada', target: pump.name, detail: 'Estado de la bomba', icon: 'fuel', before: 'activa', after: 'inactiva',
+          })) return;
           toast.warning(`${pump.name} desactivada`, 'Ya no aparecerá en las lecturas diarias.');
         }}
       />

@@ -141,7 +141,12 @@ export interface DayStatus {
 
 export interface FuelPrice {
   id?: string;
+  /** Día (YYYY-MM-DD, hora de Honduras) desde el que rige; entradas viejas: dd/mm/aaaa. */
   date: string;
+  /** Instante ISO desde el que rige el precio (A9). Entradas viejas sin él: rige desde `timestamp`. */
+  vigenteDesde?: string;
+  /** Milisegundos de cuando se registró. */
+  timestamp?: number;
   super: number;
   regular: number;
   diesel: number;
@@ -150,8 +155,12 @@ export interface FuelPrice {
 
 export interface AuditEntry {
   id?: string;
+  /** Hora HH:MM (solo para mostrar). */
   timestamp: string;
+  /** Día (solo para mostrar): YYYY-MM-DD; entradas viejas dd/mm/aaaa. */
   date: string;
+  /** Instante ISO del registro (serverTimestamp normalizado al leer). Ordena la auditoría (A12). */
+  at?: string;
   userId: string;
   userName: string;
   userRole: string;
