@@ -60,9 +60,10 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // settings/operacion (turnos, TASK-019) también lo edita quien configura bombas.
     match /settings/{settingId} {
       allow read: if activo();
-      allow write: if permiso('canEditPrices');
+      allow write: if permiso('canEditPrices') || (settingId == 'operacion' && permiso('canManagePumps'));
     }
 
     function diaCerrado(fecha) {
@@ -118,6 +119,79 @@ service cloud.firestore {
         || (request.resource.data.get('status', null) == resource.data.get('status', null)
             && resource.data.get('status', '') != 'cerrado')
       );
+      allow delete: if false;
+    }
+
+    // ─── Turnos y arqueo por bombero (TASK-019; la app solo los usa con settings/operacion.shiftsEnabled) ───
+    function fechaIso(f) { return f is string && f.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+    function turno(id) { return get(/databases/$(database)/documents/shifts/$(id)).data; }
+    function numOpcional(d, k) { return !(k in d) || d[k] is number; }
+
+    // Puntero al turno abierto y al último cerrado (garantiza un solo turno abierto a la vez).
+    match /shiftState/{docId} {
+      allow read: if activo();
+      allow create, update: if docId == 'actual' && permiso('canCloseDay');
+      allow delete: if false;
+    }
+
+    // Turno: lo abre y lo cierra quien puede cerrar el día. Cerrado no se modifica. No se borra.
+    match /shifts/{shiftId} {
+      allow read: if activo();
+      allow create: if permiso('canCloseDay')
+        && fechaIso(request.resource.data.date)
+        && request.resource.data.templateId is string
+        && shiftId == request.resource.data.date + '_' + request.resource.data.templateId
+        && request.resource.data.status == 'abierto'
+        && request.resource.data.assignments is list
+        && request.resource.data.attendantEmails is list;
+      allow update: if permiso('canCloseDay')
+        && resource.data.status == 'abierto'
+        && request.resource.data.status in ['abierto', 'cerrado']
+        && request.resource.data.date == resource.data.date
+        && request.resource.data.templateId == resource.data.templateId
+        && request.resource.data.attendantEmails is list;
+      allow delete: if false;
+    }
+
+    // Lecturas por turno: solo mientras el turno está abierto; la inicial y la manguera no cambian.
+    match /shiftReadings/{readingId} {
+      allow read: if activo();
+      allow create: if permiso('canCloseDay')
+        && readingId == request.resource.data.shiftId + '_' + request.resource.data.dispenserId
+        && request.resource.data.initialReading is number
+        && numOpcional(request.resource.data, 'finalReading')
+        && existsAfter(/databases/$(database)/documents/shifts/$(request.resource.data.shiftId))
+        && getAfter(/databases/$(database)/documents/shifts/$(request.resource.data.shiftId)).data.status == 'abierto';
+      allow update: if permiso('canCloseDay')
+        && request.resource.data.shiftId == resource.data.shiftId
+        && request.resource.data.dispenserId == resource.data.dispenserId
+        && request.resource.data.initialReading == resource.data.initialReading
+        && numOpcional(request.resource.data, 'finalReading')
+        && turno(resource.data.shiftId).status == 'abierto';
+      allow delete: if false;
+    }
+
+    // Arqueo por bombero: lo registra quien puede cerrar el día, o el propio bombero asignado al turno
+    // (sin marcarlo recibido y solo mientras nadie lo recibió). No se borra.
+    function arqueoValido(cashId) {
+      return cashId == request.resource.data.shiftId + '_' + request.resource.data.email
+        && request.resource.data.cash is number && request.resource.data.card is number
+        && request.resource.data.credits is number && request.resource.data.partialDrops is number
+        && request.resource.data.cash >= 0 && request.resource.data.card >= 0
+        && request.resource.data.credits >= 0 && request.resource.data.partialDrops >= 0
+        && exists(/databases/$(database)/documents/shifts/$(request.resource.data.shiftId))
+        && request.resource.data.email in turno(request.resource.data.shiftId).attendantEmails;
+    }
+    function arqueoPropio() {
+      return email().lower() == request.resource.data.email && !('receivedBy' in request.resource.data);
+    }
+    match /cashCounts/{cashId} {
+      allow read: if activo();
+      allow create: if activo() && arqueoValido(cashId) && (permiso('canCloseDay') || arqueoPropio());
+      allow update: if activo() && arqueoValido(cashId)
+        && request.resource.data.shiftId == resource.data.shiftId
+        && request.resource.data.email == resource.data.email
+        && (permiso('canCloseDay') || (arqueoPropio() && !('receivedBy' in resource.data)));
       allow delete: if false;
     }
 
