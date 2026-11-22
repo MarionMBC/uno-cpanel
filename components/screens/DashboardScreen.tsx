@@ -10,7 +10,7 @@ import Icon from '@/components/ui/Icon';
 import { fmtL, fmtNum, getDayOfWeekEs, getMonthEs } from '@/lib/utils';
 import { LITERS_PER_GALLON, productosDeBomba } from '@/lib/constants';
 import { useAuth } from '@/contexts/AuthContext';
-import { calcVenta, lecturasPorDispensador, round } from '@/lib/totalizadores';
+import { lecturasPorDispensador, sumarVentas } from '@/lib/totalizadores';
 
 const TREND_14D = (() => {
   const arr = [];
@@ -40,13 +40,8 @@ export default function DashboardScreen({ setRoute }: DashboardScreenProps) {
 
   // Mismo cálculo y redondeo que Lectura final y el Cuadro (calcVenta), una lectura por dispensador.
   const totals = useMemo(() => {
-    let l = 0; let m = 0;
-    lecturasPorDispensador(readings).forEach(r => {
-      const v = calcVenta(r, currentPrices);
-      if (v.estado === 'ok') { l += v.litros; m += v.total; }
-    });
-    l = round(l, 3); m = round(m, 2);
-    return { lempiras: m, liters: l, gallons: l / LITERS_PER_GALLON };
+    const { litros, total } = sumarVentas(lecturasPorDispensador(readings).values(), currentPrices);
+    return { lempiras: total, liters: litros, gallons: litros / LITERS_PER_GALLON };
   }, [readings, currentPrices]);
 
   const activePumps = pumps.filter(p => p.isActive);

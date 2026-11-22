@@ -92,24 +92,32 @@ export function lecturasPorDispensador<T extends Pick<DailyReading, 'id' | 'date
 
 // ─── Cálculo único de venta (A4) y vuelta a cero (A7) ────────────────────────
 
-/** Máximo del totalizador por defecto (6 enteros, 3 decimales). */
+/** Máximo visible del totalizador por defecto (6 enteros, 3 decimales). */
 export const METER_MAX_DEFAULT = 999999.999;
+/** Resolución del totalizador: el paso de 999999.999 a 000000.000 también es 0.001 L. */
+export const METER_RESOLUCION = 0.001;
+/** Tope de plausibilidad: más litros que esto en una manguera en un día es un error de digitación. */
+export const LITROS_MAX_DIA = 20000;
 
 /**
  * Litros entre inicial y final, o null si no cuadran.
  * - Normal: final − inicial (final ≥ inicial).
- * - Rollover (el totalizador pasó por cero): final + meterMax − inicial.
- *   Ej.: inicial 999850, final 120, meterMax 999999.999 → 270 L (aprox.: el valor exacto suma la resolución, 0.001 L).
- *   Solo es válido si final < inicial (si no, no hubo vuelta).
+ * - Rollover (el totalizador pasó por cero): final + (meterMax + resolución) − inicial,
+ *   es decir, módulo 1 000 000 con el máximo por defecto.
+ *   Ej.: inicial 999850, final 120 → 270.000 L exactos.
+ *   Solo es válido si final < inicial (si no, no hubo vuelta) e inicial ≤ meterMax.
  */
 export function litrosEntre(inicial: number, final: number, rollover = false, meterMax = METER_MAX_DEFAULT): number | null {
   if (rollover) {
     if (final >= inicial || inicial > meterMax) return null;
-    return round(final + meterMax - inicial, 3);
+    return round(final + meterMax + METER_RESOLUCION - inicial, 3);
   }
   if (final < inicial) return null;
   return round(final - inicial, 3);
 }
+
+/** Litros por encima del tope diario de una manguera (no plausibles). */
+export const excedeTope = (litros: number) => litros > LITROS_MAX_DIA;
 
 export type LecturaVenta = Pick<DailyReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax'>;
 
@@ -120,16 +128,63 @@ export interface Venta {
   precio: number;
   /** round(litros × precio, 2). */
   total: number;
+  /** Por qué es inválida: final menor a la inicial (sin vuelta a cero válida) o litros sobre el tope diario. */
+  motivo?: 'menor' | 'tope';
 }
 
 /** Único cálculo de venta de una lectura. Lo usan Lectura final, Dashboard, Cuadro y (luego) Reportes. */
 export function calcVenta(r: LecturaVenta, precios: PreciosPorLitro): Venta {
-  const precio = r.fuelPrice > 0 ? r.fuelPrice : precios[r.fuelId] || 0;
+  const precio = Number.isFinite(r.fuelPrice) && r.fuelPrice > 0 ? r.fuelPrice : precios[r.fuelId] || 0;
   if (r.status === 'mantenimiento') return { estado: 'mantenimiento', litros: 0, precio, total: 0 };
   if (r.finalReading === undefined || r.finalReading === null || Number.isNaN(r.finalReading)) return { estado: 'pendiente', litros: 0, precio, total: 0 };
   const litros = litrosEntre(r.initialReading, r.finalReading, r.rollover === true, r.meterMax ?? METER_MAX_DEFAULT);
-  if (litros === null) return { estado: 'invalida', litros: 0, precio, total: 0 };
+  if (litros === null) return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'menor' };
+  if (excedeTope(litros)) return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'tope' };
   return { estado: 'ok', litros, precio, total: round(litros * precio, 2) };
+}
+
+/** Suma de ventas válidas (una lectura por dispensador). Dashboard y Lectura final usan esta suma. */
+export function sumarVentas(lecturas: Iterable<LecturaVenta>, precios: PreciosPorLitro): { litros: number; total: number } {
+  let litros = 0, total = 0;
+  for (const r of lecturas) {
+    const v = calcVenta(r, precios);
+    if (v.estado === 'ok') { litros += v.litros; total += v.total; }
+  }
+  return { litros: round(litros, 3), total: round(total, 2) };
+}
+
+/** Fila de Lectura final: un dispensador del día. */
+export interface FilaFinal {
+  id: string; name: string; pumpName: string; face: string;
+  fuel: string; fuelName: string; fuelColor: string; meterMax: number;
+}
+
+/**
+ * Filas de Lectura final: dispensadores operables (bomba activa y no inactivo) más los que tienen
+ * lectura de hoy aunque la configuración haya cambiado (bomba desactivada, dispensador inactivo o
+ * borrado). Así Lectura final, Cuadro y Dashboard suman las mismas lecturas.
+ */
+export function filasLecturaFinal(pumps: Pump[], readings: DailyReading[]): FilaFinal[] {
+  const porDispensador = lecturasPorDispensador(readings);
+  const out: FilaFinal[] = [];
+  const vistos = new Set<string>();
+  pumps.forEach(p => p.faces.forEach(f => f.dispensers.forEach(d => {
+    const operable = p.isActive && d.status !== 'inactivo';
+    if (!operable && !porDispensador.has(d.id)) return;
+    vistos.add(d.id);
+    out.push({
+      id: d.id, name: d.name, pumpName: p.name, face: f.id,
+      fuel: d.fuel, fuelName: d.fuelName, fuelColor: d.fuelColor, meterMax: d.meterMax ?? METER_MAX_DEFAULT,
+    });
+  })));
+  porDispensador.forEach(r => {
+    if (vistos.has(r.dispenserId)) return;
+    out.push({
+      id: r.dispenserId, name: r.dispenserName, pumpName: r.pumpName || r.pumpId, face: r.face,
+      fuel: r.fuelId, fuelName: r.fuelName || r.fuelId, fuelColor: '#64748b', meterMax: r.meterMax ?? METER_MAX_DEFAULT,
+    });
+  });
+  return out;
 }
 
 // ─── Continuidad (A8) ─────────────────────────────────────────────────────────
@@ -236,7 +291,9 @@ export function buildCuadro(pumps: Pump[], readings: DailyReading[], precios: Pr
             fuelId, fuelName: r?.fuelName || d.fuelName, fuelColor: d.fuelColor,
             inicial: r ? r.initialReading : null, final: r?.finalReading ?? null,
             rollover: r?.rollover === true, continuityBreak: r?.continuityBreak === true,
-          }, r, !pump.isActive || d.status === 'mantenimiento'));
+          // Bomba inactiva o dispensador en mantenimiento solo fuerzan "mantenimiento" si no hay lectura:
+          // con lectura manda la lectura (calcVenta ya devuelve mantenimiento si la lectura lo es).
+          }, r, !r && (!pump.isActive || d.status === 'mantenimiento')));
         });
       });
     });
