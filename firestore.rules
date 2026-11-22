@@ -44,9 +44,16 @@ service cloud.firestore {
     }
 
     // Historial de precios: solo se agregan entradas.
+    function precioValido(p) { return p is number && p > 0 && p <= 200; }
     match /prices/{priceId} {
       allow read: if activo();
-      allow create: if permiso('canEditPrices');
+      // Precio por litro razonable y vigencia ISO (se compara como texto para resolver el vigente).
+      allow create: if permiso('canEditPrices')
+        && precioValido(request.resource.data.super)
+        && precioValido(request.resource.data.regular)
+        && precioValido(request.resource.data.diesel)
+        && (!('vigenteDesde' in request.resource.data)
+            || request.resource.data.vigenteDesde.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{3})?Z$'));
       allow update, delete: if false;
     }
 

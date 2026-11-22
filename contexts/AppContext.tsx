@@ -2,8 +2,7 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
 import {
-  collection, doc, setDoc, addDoc, writeBatch,
-  onSnapshot, query, orderBy, getDocs, where, runTransaction, serverTimestamp, Timestamp
+  collection, doc, setDoc, addDoc, writeBatch, onSnapshot, query, orderBy, getDocs, where, runTransaction, serverTimestamp, Timestamp, limit
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { Pump, AuditEntry, FuelPrice, DayStatusValue, DailyReading, DayStatus, AppUser, AppRole } from '@/types';
@@ -232,10 +231,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!verAuditoria) { setAuditLog([]); return; }
-    // Sin orderBy en la consulta: orderBy('at') dejaría fuera las entradas viejas sin `at`.
-    // Se ordena en el cliente por `at` (o date+timestamp en las viejas).
+    // Las 500 más recientes por `at` (hora del servidor): la colección crece sin tope y no conviene
+    // escucharla entera. Las entradas anteriores a TASK-017 (sin `at`) quedan en Firestore pero fuera de
+    // esta vista. Se reordena en el cliente por si llegan con hora estimada.
     return onSnapshot(
-      collection(db, 'auditLog'),
+      query(collection(db, 'auditLog'), orderBy('at', 'desc'), limit(500)),
       snap => setAuditLog(ordenarAuditoria(snap.docs.map(d => {
         const data = d.data({ serverTimestamps: 'estimate' });
         const at = data.at instanceof Timestamp ? data.at.toDate().toISOString() : typeof data.at === 'string' ? data.at : undefined;

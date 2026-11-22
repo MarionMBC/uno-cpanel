@@ -69,8 +69,10 @@ caso('operador crea usuario', await op(operador, 'PATCH', 'users/nuevo@uno.local
 caso('operador lee auditoría', await op(operador, 'GET', 'auditLog/x'), false);
 caso('operador agrega auditoría', await op(operador, 'PATCH', `auditLog/op_entry_${run}`, { action: 'x', userId: uids['operador@uno.local'], userName: 'Operador Uno' }), true);
 // CA4: admin
-caso('admin crea precio', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 37.5 }), true);
-caso('admin modifica precio existente', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 40 }), false);
+caso('admin crea precio', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 37.5, regular: 34.2, diesel: 40.3, vigenteDesde: '2026-11-21T18:00:00.000Z' }), true);
+caso('admin crea precio fuera de rango', await op(admin, 'PATCH', `prices/admin_test_r${run}`, { super: 999, regular: 34.2, diesel: 40.3 }), false);
+caso('admin crea precio con vigencia mal formada', await op(admin, 'PATCH', `prices/admin_test_v${run}`, { super: 37.5, regular: 34.2, diesel: 40.3, vigenteDesde: 'mañana' }), false);
+caso('admin modifica precio existente', await op(admin, 'PATCH', `prices/admin_test_${run}`, { super: 40, regular: 34.2, diesel: 40.3 }), false);
 caso('admin edita bombas', await op(admin, 'PATCH', 'pumps/p1', { name: 'Bomba 01' }), true);
 caso('admin guarda settings', await op(admin, 'PATCH', 'settings/precios', { nota: 'x' }), true);
 caso('admin lee auditoría', await op(admin, 'GET', `auditLog/op_entry_${run}`), true);
