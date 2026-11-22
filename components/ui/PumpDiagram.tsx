@@ -1,6 +1,7 @@
 'use client';
 
 import { Pump } from '@/types';
+import { productosDeBomba } from '@/lib/constants';
 
 interface PumpDiagramProps {
   pump: Pump;
@@ -19,11 +20,11 @@ export default function PumpDiagram({ pump, activeFace, activeDisp, onPick, comp
         <rect x="40" y="40" width="120" height="170" rx="10" fill="#0f1f3d" stroke="#1e293b"/>
         <rect x="46" y="46" width="108" height="40" rx="4" fill="#fbbf24"/>
         <text x="100" y="72" fontSize="14" fontWeight="800" textAnchor="middle" fill="#0f1f3d" fontFamily="system-ui">
-          {pump.fuel.name.toUpperCase()}
+          {productosDeBomba(pump).length > 1 ? `${productosDeBomba(pump).length} PRODUCTOS` : productosDeBomba(pump)[0].name.toUpperCase()}
         </text>
         <rect x="46" y="92" width="108" height="34" rx="3" fill="#0a0f1c" stroke="#fbbf24" strokeOpacity=".3"/>
         <text x="100" y="113" fontSize="11" textAnchor="middle" fill="#fbbf24" fontFamily="ui-monospace, monospace" fontWeight="600">
-          L. {pump.fuel.price.toFixed(2)}
+          {productosDeBomba(pump).map(f => f.name.slice(0, 3).toUpperCase()).join(' · ')}
         </text>
         <g style={{ cursor: 'pointer' }} onClick={() => onPick?.('A')} opacity={activeFace === 'B' ? 0.4 : 1}>
           <line x1="40" y1="140" x2="20" y2="140" stroke="#94a3b8" strokeWidth="3"/>

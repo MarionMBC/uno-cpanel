@@ -105,7 +105,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         (PRICE_HISTORY as FuelPrice[]).forEach((p, i) => {
           const { id: _id, ...rest } = p as FuelPrice & { id?: string };
           // add a fake timestamp to seed data to allow sorting
-          batch.set(doc(db, 'prices', `seed_${i}`), { ...rest, timestamp: new Date('2026-11-23T06:01:00Z').getTime() - i * 86400000 });
+          batch.set(doc(db, 'prices', `seed_${i}`), { ...rest, timestamp: Date.now() - i * 1000 }); // fecha real de alta: nunca en el futuro (el vigente es el más reciente)
         });
         await batch.commit();
       }

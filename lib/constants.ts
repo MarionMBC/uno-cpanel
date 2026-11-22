@@ -3,15 +3,16 @@ import { Dispenser, Fuel, Pump } from '@/types';
 export const LITERS_PER_GALLON = 3.78541;
 
 // Precios por LITRO (todo el sistema calcula litros × precio por litro).
-// Semilla = precio oficial SEN vigente desde el lunes 23/11/2026 en Tegucigalpa (L/galón ÷ 3.78541)
+// Semilla = precio oficial SEN vigente del lunes 16/11/2026 en Tegucigalpa (L/galón ÷ 3.78541; Súper 142.91,
+// Regular 128.05, Diésel 153.53)
 // + diferencial de Guaimaca derivado del cuadro de la estación del 27/04/2026 (precio estación − SEN).
 // El admin los actualiza cada semana desde "Precio del combustible" → "Consultar precio oficial".
 export const DEFAULT_DIFERENCIAL_POR_LITRO = { super: 1.11, regular: 0.4, diesel: -0.29 } as const;
 
 export const FUELS: Fuel[] = [
-  { id: 'super', name: 'Súper', color: '#ef4444', price: 37.42 },
-  { id: 'regular', name: 'Regular', color: '#22c55e', price: 32.84 },
-  { id: 'diesel', name: 'Diésel', color: '#f59e0b', price: 40.05 },
+  { id: 'super', name: 'Súper', color: '#ef4444', price: 38.86 },
+  { id: 'regular', name: 'Regular', color: '#22c55e', price: 34.23 },
+  { id: 'diesel', name: 'Diésel', color: '#f59e0b', price: 40.27 },
 ];
 
 const fuel = (id: string) => FUELS.find(f => f.id === id) as Fuel;
@@ -50,11 +51,11 @@ export const INITIAL_PUMPS: Pump[] = [bomba(1), bomba(2)];
 /** Primera entrada del historial de precios (por litro). */
 export const PRICE_HISTORY = [
   {
-    id: 'oficial-2026-11-23',
-    date: '23/11/2026',
-    super: 37.42,
-    regular: 32.84,
-    diesel: 40.05,
+    id: 'oficial-2026-11-16',
+    date: '16/11/2026',
+    super: 38.86,
+    regular: 34.23,
+    diesel: 40.27,
     registeredBy: 'Precio oficial SEN (Tegucigalpa) + diferencial Guaimaca',
   },
 ];
