@@ -101,6 +101,8 @@ export interface TankCuadre {
   /** |porcentaje| > 0,5 %. */
   alerta: boolean;
   provisional: boolean;
+  /** Algo que afecta el cuadre cambió después de guardarlo (p. ej. se anuló una pipa): volver a cuadrar. */
+  desactualizado?: boolean;
   savedAt: string;
   savedBy: string;
 }

@@ -187,7 +187,7 @@ export default function ControlCombustibleScreen() {
             cuadreTanque({ inicialGal, recibidoGal: recibidoTanque(dayData?.receipts, f, tk), vendidoL: vendidoL[f] || 0, finalGal: gal }),
             { provisional: (pendientesPorProducto[f] || 0) > 0, savedAt, savedBy: autor },
           );
-          entry.cuadre = c;
+          entry.cuadre = { ...c, desactualizado: false }; // merge profundo: limpiar la marca de una anulación previa
           if (c.alerta) alertas.push(`${NOMBRE[f]} ${fmtNum(c.porcentaje ?? 0, 2)} %`);
         } else {
           entry.cuadre = deleteField();
@@ -279,7 +279,12 @@ export default function ControlCombustibleScreen() {
         const nueva = lista.map(r => r.id === actual.id
           ? { ...r, voided: true, voidReason: razon, voidedBy: autor, voidedAt: new Date().toISOString() }
           : r);
-        tx.set(ref, { receipts: nueva, tanks: { [actual.fuelId]: { refueledGallons: totalPipas(nueva, actual.fuelId) } } }, { merge: true });
+        // El cuadre guardado se calculó con esta pipa: queda marcado para volver a cuadrar.
+        const cuadrePrevio = (snap.data()?.tanks?.[actual.fuelId]?.cuadre) as TankCuadre | undefined;
+        tx.set(ref, { receipts: nueva, tanks: { [actual.fuelId]: {
+          refueledGallons: totalPipas(nueva, actual.fuelId),
+          ...(cuadrePrevio ? { cuadre: { desactualizado: true } } : {}),
+        } } }, { merge: true });
         return actual;
       });
       auditar('Anulación pipa', rec.fuelName, `${fmtNum(galonesPipa(rec), 2)} gal · factura ${rec.invoice || 'S/N'} · motivo: ${razon}`, 'trash');
@@ -477,7 +482,7 @@ export default function ControlCombustibleScreen() {
                     </div>
                     <div style={{ fontSize: 11.5, color: guardado ? '#475569' : '#94a3b8' }}>
                       {guardado
-                        ? `Cuadre guardado ${new Date(guardado.savedAt).toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' })} por ${guardado.savedBy}: ${guardado.diferenciaGal > 0 ? '+' : guardado.diferenciaGal < 0 ? '−' : ''}${fmtNum(Math.abs(guardado.diferenciaGal), 2)} gal${guardado.porcentaje !== null ? ` (${fmtNum(guardado.porcentaje, 2)} %)` : ''}${guardado.provisional ? ' · provisional' : ''}`
+                        ? `Cuadre guardado ${new Date(guardado.savedAt).toLocaleTimeString('es-HN', { hour: '2-digit', minute: '2-digit' })} por ${guardado.savedBy}: ${guardado.diferenciaGal > 0 ? '+' : guardado.diferenciaGal < 0 ? '−' : ''}${fmtNum(Math.abs(guardado.diferenciaGal), 2)} gal${guardado.porcentaje !== null ? ` (${fmtNum(guardado.porcentaje, 2)} %)` : ''}${guardado.provisional ? ' · provisional' : ''}${guardado.desactualizado ? ' · DESACTUALIZADO: se anuló una pipa, vuelva a «Guardar y Cuadrar»' : ''}`
                         : 'Cuadre sin guardar.'}
                     </div>
                   </div>
