@@ -117,31 +117,55 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Reabrir un día cerrado (hoy o pasado, TASK-023): con motivo (≥ 5), firmado por quien reabre y con
-    // reopenedAt nuevo (cada reapertura deja su propio registro).
-    function reaperturaValida() {
+    // Estado del día (TASK-023). Las firmas de cierre y reapertura solo se escriben en su transición:
+    // - reabrir (cerrado → en_proceso/pendiente): canCloseDay, motivo 5–500 (sin contar espacios),
+    //   reopenedBy = sesión, reopenedAt = hora del servidor; closedBy/closedAt quedan como estaban.
+    // - cerrar (abierto → cerrado): canCloseDay, closedBy = sesión, closedAt = hora del servidor;
+    //   la última reapertura queda como registro.
+    // Fuera de esas transiciones, closedBy/closedAt/reopenedBy/reopenReason/reopenedAt no cambian.
+    function camposIguales(ks) { return !request.resource.data.diff(resource.data).affectedKeys().hasAny(ks); }
+    function motivoReapertura(m) { return m is string && m.trim().size() >= 5 && m.size() <= 500; }
+    function reapertura() {
+      return resource.data.get('status', '') == 'cerrado'
+        && request.resource.data.get('status', '') in ['en_proceso', 'pendiente']
+        && motivoReapertura(request.resource.data.get('reopenReason', null))
+        && request.resource.data.get('reopenedBy', '') == email().lower()
+        && request.resource.data.get('reopenedAt', null) == request.time
+        && camposIguales(['closedBy', 'closedAt']);
+    }
+    function cierre() {
       return resource.data.get('status', '') != 'cerrado'
-        || request.resource.data.get('status', '') == 'cerrado'
-        || (request.resource.data.get('reopenReason', '') is string && request.resource.data.get('reopenReason', '').size() >= 5
-            && request.resource.data.get('reopenedBy', '') == email().lower()
-            && request.resource.data.get('reopenedAt', null) is string
-            && request.resource.data.get('reopenedAt', null) != resource.data.get('reopenedAt', null));
+        && request.resource.data.get('status', '') == 'cerrado'
+        && request.resource.data.get('closedBy', '') == email().lower()
+        && request.resource.data.get('closedAt', null) == request.time
+        && camposIguales(['reopenedBy', 'reopenReason', 'reopenedAt']);
+    }
+    function firmasIguales() { return camposIguales(['closedBy', 'closedAt', 'reopenedBy', 'reopenReason', 'reopenedAt']); }
+    function mismoEstado() { return request.resource.data.get('status', null) == resource.data.get('status', null); }
+    // en_proceso ↔ pendiente (sin cerrar ni reabrir).
+    function cambioAbierto() {
+      return resource.data.get('status', 'en_proceso') in ['en_proceso', 'pendiente']
+        && request.resource.data.get('status', '') in ['en_proceso', 'pendiente'];
     }
 
     // Día operativo (tanques, pipas, fondo, horómetro, estado).
-    // Cambiar el estado (cerrar, reabrir o borrar el campo) exige canCloseDay; con el día cerrado,
-    // cualquier cambio exige canCloseDay.
+    // Cambiar el estado (cerrar, reabrir) exige canCloseDay; con el día cerrado, cualquier cambio exige canCloseDay.
     match /dayStatus/{date} {
       allow read: if activo();
-      // El id del día es la fecha (YYYY-MM-DD); evita días "fantasma" fuera de los reportes.
-      allow create: if activo() && date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && (
-        request.resource.data.get('status', 'en_proceso') in ['en_proceso', 'pendiente']
-        || permiso('canCloseDay')
-      );
+      // El id del día es la fecha (YYYY-MM-DD); evita días "fantasma" fuera de los reportes. Nace sin reapertura;
+      // si nace cerrado, con la firma del cierre.
+      allow create: if activo() && date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && !request.resource.data.keys().hasAny(['reopenedBy', 'reopenReason', 'reopenedAt'])
+        && (
+          (request.resource.data.get('status', 'en_proceso') in ['en_proceso', 'pendiente']
+            && !request.resource.data.keys().hasAny(['closedBy', 'closedAt']))
+          || (permiso('canCloseDay') && request.resource.data.get('status', '') == 'cerrado'
+            && request.resource.data.get('closedBy', '') == email().lower()
+            && request.resource.data.get('closedAt', null) == request.time)
+        );
       allow update: if activo() && (
-        (permiso('canCloseDay') && reaperturaValida())
-        || (request.resource.data.get('status', null) == resource.data.get('status', null)
-            && resource.data.get('status', '') != 'cerrado')
+        (permiso('canCloseDay') && (reapertura() || cierre() || ((mismoEstado() || cambioAbierto()) && firmasIguales())))
+        || (mismoEstado() && resource.data.get('status', '') != 'cerrado' && firmasIguales())
       );
       allow delete: if false;
     }
@@ -250,8 +274,19 @@ service cloud.firestore {
         && casi(d.difference, d.declared - d.expected)
         && d.status in ['conforme', 'con_diferencia']
         && (d.status == 'conforme') == (d.difference == 0)
-        && (!('notes' in d) || (d.notes is string && d.notes.size() <= 500));
+        && (!('notes' in d) || (d.notes is string && d.notes.size() <= 500))
+        && texto(d.name) && texto(d.declaredBy) && texto(d.declaredAt)
+        && textoOpcional(d, 'receivedBy') && textoOpcional(d, 'receivedAt')
+        && textoOpcional(d, 'recalculatedBy') && textoOpcional(d, 'recalculatedAt');
     }
+    function texto(v) { return v is string && v.size() <= 200; }
+    function textoOpcional(d, k) { return !(k in d) || texto(d[k]); }
+    // Campo ausente, sin cambio o firmado por quien escribe (recepción y recálculo los firma la sesión).
+    function campoFirmado(k, previo) {
+      return !(k in request.resource.data) || request.resource.data[k] == previo || request.resource.data[k] == email().lower();
+    }
+    // Campo ausente o sin cambio (el bombero no puede marcar recálculo).
+    function campoSinCambio(k, previo) { return !(k in request.resource.data) || request.resource.data[k] == previo; }
 
     // Arqueo por bombero: lo registra quien puede cerrar el día, o el propio bombero asignado al turno
     // (sin marcarlo recibido y solo mientras nadie lo recibió). No se borra.
@@ -269,11 +304,22 @@ service cloud.firestore {
     }
     match /cashCounts/{cashId} {
       allow read: if activo();
-      allow create: if activo() && arqueoValido(cashId) && (permiso('canCloseDay') || arqueoPropio());
+      allow create: if activo() && arqueoValido(cashId) && (
+        (permiso('canCloseDay') && campoFirmado('receivedBy', null) && campoFirmado('recalculatedBy', null))
+        || (arqueoPropio() && request.resource.data.declaredBy == email().lower()
+            && campoSinCambio('recalculatedBy', null) && campoSinCambio('recalculatedAt', null))
+      );
       allow update: if activo() && arqueoValido(cashId)
         && request.resource.data.shiftId == resource.data.shiftId
         && request.resource.data.email == resource.data.email
-        && (permiso('canCloseDay') || (arqueoPropio() && !('receivedBy' in resource.data)));
+        && (
+          (permiso('canCloseDay') && campoFirmado('receivedBy', resource.data.get('receivedBy', null))
+            && campoFirmado('recalculatedBy', resource.data.get('recalculatedBy', null)))
+          || (arqueoPropio() && !('receivedBy' in resource.data)
+            && (request.resource.data.declaredBy == email().lower() || request.resource.data.declaredBy == resource.data.get('declaredBy', null))
+            && campoSinCambio('recalculatedBy', resource.data.get('recalculatedBy', null))
+            && campoSinCambio('recalculatedAt', resource.data.get('recalculatedAt', null)))
+        );
       allow delete: if false;
     }
 

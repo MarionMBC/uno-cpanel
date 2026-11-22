@@ -13,12 +13,13 @@ import TextField from '@/components/ui/TextField';
 import ConfirmDialog from '@/components/overlays/ConfirmDialog';
 import Modal from '@/components/overlays/Modal';
 import ReabrirDiaModal from '@/components/overlays/ReabrirDiaModal';
+import { cerrarDiaConMantenimiento } from '@/lib/diaDb';
 import { fmtL, fmtNum } from '@/lib/utils';
 import { LITERS_PER_GALLON } from '@/lib/constants';
 import { DailyReading } from '@/types';
 import * as XLSX from 'xlsx';
 import {
-  calcVenta, excedeTope, FilaFinal, filasLecturaFinal, lecturasMantenimientoCierre, lecturasPorDispensador, litrosEntre, LITROS_MAX_DIA, METER_RESOLUCION, rompeContinuidad, round, sumarVentas, Venta,
+  calcVenta, excedeTope, FilaFinal, filasLecturaFinal, lecturasPorDispensador, litrosEntre, LITROS_MAX_DIA, METER_RESOLUCION, rompeContinuidad, round, sumarVentas, Venta,
 } from '@/lib/totalizadores';
 import { bloqueoCierre } from '@/lib/turnosDb';
 
@@ -37,8 +38,8 @@ const msgInvalida = (v: Venta | null) => v?.motivo === 'tope'
     : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
 
 export default function LecturaFinalScreen() {
-  const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, preciosLectura, roles, today, operacion } = useApp();
-  const { appUser } = useAuth();
+  const { pumps, dayStatus, addAuditEntry, readings, saveReadings, preciosLectura, roles, today, operacion } = useApp();
+  const { appUser, user } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [guardando, setGuardando] = useState(false);
@@ -235,18 +236,11 @@ export default function LecturaFinalScreen() {
     if (await turnosImpidenCierre()) { setConfirmOpen(false); return; }
     const finales = prepararFinales(true);
     if (!finales) return;
-    const autor = appUser?.email || appUser?.name || 'unknown';
-    const ahora = new Date().toISOString();
-    // Mantenimiento: la final es la inicial (0 litros). Misma regla que el cierre desde Turnos.
-    const mant = lecturasMantenimientoCierre({
-      fecha: today, autor, ahora, enMantenimiento: [], previas: [],
-      diarias: rows.map(f => lecturaDe.get(f.id)).filter((r): r is DailyReading => !!r),
-    });
     const totalCierre = totals.m;
     try {
       await guardarFinales(finales);
-      if (mant.length > 0) await saveReadings(mant);
-      await updateDayData({ status: 'cerrado', closedBy: autor, closedAt: ahora });
+      // Mantenimiento (final = inicial, 0 L) y estado cerrado en una transacción, misma regla que Turnos.
+      await cerrarDiaConMantenimiento({ fecha: today, hoy: today, pumps, autorEmail: user?.email || '', precios: preciosLectura({ date: today }) });
     } catch (e) {
       console.error(e);
       toast.error('No se cerró el día', 'Revisa la conexión e intenta de nuevo.');

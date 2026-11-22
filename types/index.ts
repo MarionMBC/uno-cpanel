@@ -123,9 +123,11 @@ export interface DayStatus {
   date: string;
   status: 'pendiente' | 'en_proceso' | 'cerrado';
   closedBy?: string;
-  closedAt?: string;
+  /** Hora del servidor (Timestamp al leer) desde TASK-023; días anteriores, ISO. Solo se muestra/compara su presencia. */
+  closedAt?: unknown;
   reopenedBy?: string;
-  reopenedAt?: string;
+  /** Hora del servidor (Timestamp al leer) desde TASK-023; antes, ISO. */
+  reopenedAt?: unknown;
   reopenReason?: string;
   horometerInitial?: number;
   horometerFinal?: number;

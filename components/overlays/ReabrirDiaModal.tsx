@@ -8,7 +8,7 @@ import { useToast } from '@/contexts/ToastContext';
 import Button from '@/components/ui/Button';
 import TextField from '@/components/ui/TextField';
 import Modal from '@/components/overlays/Modal';
-import { reabrirDia } from '@/lib/diaDb';
+import { MOTIVO_REAPERTURA_MAX, reabrirDia } from '@/lib/diaDb';
 import { fechaCortaHN } from '@/lib/fecha';
 
 const MOTIVO_MIN = 5;
@@ -24,8 +24,8 @@ interface Props {
 }
 
 export default function ReabrirDiaModal({ fecha, onClose, onReabierto, detalle = 'Vuelve a permitir corregir lecturas, turnos y arqueos del día.' }: Props) {
-  const { addAuditEntry } = useApp();
-  const { appUser } = useAuth();
+  const { entradaAuditoria } = useApp();
+  const { user } = useAuth();
   const toast = useToast();
   const [motivo, setMotivo] = useState('');
   const [ocupado, setOcupado] = useState(false);
@@ -36,12 +36,16 @@ export default function ReabrirDiaModal({ fecha, onClose, onReabierto, detalle =
     if (!fecha) return;
     const m = motivo.trim();
     if (m.length < MOTIVO_MIN) { toast.error('Falta el motivo', `Escribe el motivo de la reapertura (mínimo ${MOTIVO_MIN} caracteres).`); return; }
+    if (m.length > MOTIVO_REAPERTURA_MAX) { toast.error('Motivo muy largo', `Máximo ${MOTIVO_REAPERTURA_MAX} caracteres.`); return; }
     setOcupado(true);
     try {
-      await reabrirDia(fecha, m, appUser?.email || '');
+      // Firma con el correo de Firebase Auth (el que comparan las reglas) y auditoría en la misma transacción.
+      await reabrirDia(fecha, m, user?.email || '', entradaAuditoria({
+        action: 'Reapertura del día', target: fechaCortaHN(fecha), detail: detalle, icon: 'unlock', before: 'cerrado', after: 'en_proceso', reason: m,
+      }));
     } catch (e) {
       console.error(e);
-      toast.error('No se reabrió', 'Revisa tu permiso y la conexión.');
+      toast.error('No se reabrió', e instanceof Error ? e.message : 'Revisa tu permiso y la conexión.');
       setOcupado(false);
       return;
     }
@@ -49,12 +53,6 @@ export default function ReabrirDiaModal({ fecha, onClose, onReabierto, detalle =
     setOcupado(false);
     cerrar();
     onReabierto?.();
-    try {
-      await addAuditEntry({ action: 'Reapertura del día', target: fechaCortaHN(fecha), detail: detalle, icon: 'unlock', before: 'cerrado', after: 'en_proceso', reason: m });
-    } catch (e) {
-      console.error(e);
-      toast.warning('Sin auditoría', 'El día se reabrió, pero no quedó el registro en la auditoría.');
-    }
   };
 
   return (

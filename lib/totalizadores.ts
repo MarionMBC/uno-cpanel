@@ -233,8 +233,12 @@ export interface MangueraMant {
  * conocida (o 0), para que la continuidad del día siguiente no se rompa. Nunca pisa una final guardada.
  */
 export function lecturasMantenimientoCierre(p: {
-  fecha: string; diarias: DailyReading[]; enMantenimiento: MangueraMant[];
+  fecha: string; diarias: DailyReading[];
+  /** Mangueras en mantenimiento sin lectura a fabricar (solo el día de hoy; en días pasados, vacío). */
+  enMantenimiento: MangueraMant[];
   previas: Pick<DailyReading, 'date' | 'dispenserId' | 'finalReading' | 'status'>[]; autor: string; ahora: string;
+  /** Precios vigentes en esa fecha (fuelPrice de la lectura fabricada) y su hora de apertura (00:00 HN del día). */
+  precios?: PreciosPorLitro; creadaEn?: string;
 }): DailyReading[] {
   const delDia = lecturasPorDispensador(p.diarias.filter(r => r.date === p.fecha));
   const cerrar = (r: DailyReading): DailyReading => ({ ...r, finalReading: r.initialReading, liters: 0, gallons: 0, total: 0, closedBy: p.autor, closedAt: p.ahora });
@@ -243,18 +247,29 @@ export function lecturasMantenimientoCierre(p: {
     const previa = finalAnterior(p.previas, m.dispenserId, p.fecha);
     return cerrar({
       date: p.fecha, dispenserId: m.dispenserId, dispenserName: m.dispenserName, face: m.face, pumpId: m.pumpId, pumpName: m.pumpName,
-      fuelId: m.fuelId, fuelName: m.fuelName, fuelPrice: 0, initialReading: previa?.valor ?? 0, status: 'mantenimiento',
-      createdBy: p.autor, createdAt: p.ahora, ...(previa ? { previousFinal: previa.valor } : {}),
+      fuelId: m.fuelId, fuelName: m.fuelName, fuelPrice: p.precios?.[m.fuelId] ?? 0, initialReading: previa?.valor ?? 0, status: 'mantenimiento',
+      createdBy: p.autor, createdAt: p.creadaEn ?? p.ahora, ...(previa ? { previousFinal: previa.valor } : {}),
     });
   });
   return [...completadas, ...nuevas];
 }
 
-/** Mangueras que la configuración actual tiene en mantenimiento (bomba inactiva o dispensador no activo). */
+/**
+ * Mangueras en mantenimiento real según la configuración actual: dispensador marcado 'mantenimiento' en una
+ * bomba activa. Una bomba inactiva (retirada) no genera lecturas diarias de 0 L.
+ */
 export function manguerasEnMantenimiento(pumps: Pump[]): MangueraMant[] {
-  return pumps.flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => !p.isActive || d.status !== 'activo').map(d => ({
+  return pumps.filter(p => p.isActive).flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status === 'mantenimiento').map(d => ({
     dispenserId: d.id, dispenserName: d.name, face: f.id, pumpId: p.id, pumpName: p.name, fuelId: d.fuel, fuelName: d.fuelName,
   }))));
+}
+
+/**
+ * ¿Se puede cerrar desde el Cuadro un día pasado abierto (p. ej. reabierto)? Solo si ese día no tuvo turnos
+ * (aunque hoy los turnos estén activos: días previos a TASK-019); con turnos, se cierra desde Turnos (B7).
+ */
+export function cierreDiaPasadoEnCuadro(p: { esHoy: boolean; cerrado: boolean; lecturas: number; turnosEseDia: number; puedeCerrarDia: boolean }): boolean {
+  return !p.esHoy && !p.cerrado && p.lecturas > 0 && p.puedeCerrarDia && p.turnosEseDia === 0;
 }
 
 // ─── Continuidad (A8) ─────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ import { FUELS, LITERS_PER_GALLON } from '@/lib/constants';
 import { diaOperativo, fechaHoraHN, instanteHN, sumarDias } from '@/lib/fecha';
 import { lecturasAbiertas } from '@/lib/inventario';
 import {
-  calcularVigencia, CLAVES_PRECIO, preciosVigentesEn, resumenPrecios, UMBRAL_VARIACION_PCT, validarPrecios, vigenciaDe,
+  calcularVigencia, CLAVES_PRECIO, preciosAntesDe, resumenPrecios, UMBRAL_VARIACION_PCT, validarPrecios, vigenciaDe,
   type ClavePrecio, type ModoVigencia, type Precios,
 } from '@/lib/precios';
 import * as XLSX from 'xlsx';
@@ -44,7 +44,9 @@ export default function PreciosScreen() {
   // (p. ej. otro precio ya programado), no contra el de hoy (TASK-023).
   const vigenciaSel = calcularVigencia(modo, new Date(), fecha, hora);
   const isoSel = 'iso' in vigenciaSel ? vigenciaSel.iso : null;
-  const base = useMemo(() => (isoSel ? preciosVigentesEn(priceHistory, isoSel) : null) ?? currentPrices, [isoSel, priceHistory, currentPrices]);
+  // Justo antes de la vigencia: si ya hay un precio programado exactamente ahí, se compara con el anterior (el que se reemplaza no cuenta).
+  const base = useMemo(() => (isoSel ? preciosAntesDe(priceHistory, isoSel) : null) ?? currentPrices, [isoSel, priceHistory, currentPrices]);
+  const baseEsHoy = CLAVES_PRECIO.every(k => base[k] === currentPrices[k]);
   const validacion = useMemo(() => validarPrecios(draft, base), [draft, base]);
   const abiertas = lecturasAbiertas(readings);
 
@@ -56,7 +58,7 @@ export default function PreciosScreen() {
     const v = calcularVigencia(modo, new Date(), fecha, hora);
     if ('error' in v) { toast.error('Vigencia inválida', v.error); return; }
     setAceptaVariacion(false);
-    const anteriores = preciosVigentesEn(priceHistory, v.iso) ?? currentPrices;
+    const anteriores = preciosAntesDe(priceHistory, v.iso) ?? currentPrices;
     const val = validarPrecios(draft, anteriores);
     if (!val.precios) return;
     setPendiente({ precios: val.precios, anteriores, vigenteDesde: v.iso, requiereConfirmacion: val.requiereConfirmacion, variaciones: val.variaciones });
@@ -148,7 +150,7 @@ export default function PreciosScreen() {
                 </div>
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 800, color: '#0f172a' }}>{f.name}</div>
-                  <div style={{ fontSize: 11.5, color: '#64748b' }}>Vigente: L. {vigente.toFixed(2)}</div>
+                  <div style={{ fontSize: 11.5, color: '#64748b' }}>{baseEsHoy ? 'Vigente' : 'Vigente en esa fecha'}: L. {vigente.toFixed(2)}</div>
                 </div>
               </div>
               <TextField

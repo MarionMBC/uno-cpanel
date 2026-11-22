@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCuadro, cuadroAoa, lecturasMantenimientoCierre, manguerasEnMantenimiento } from './totalizadores.ts';
+import { buildCuadro, cierreDiaPasadoEnCuadro, cuadroAoa, lecturasMantenimientoCierre, manguerasEnMantenimiento } from './totalizadores.ts';
 import type { DailyReading, Dispenser, Pump } from '../types';
 
 const disp = (pumpId: string, face: string, n: number, fuel: string, status: Dispenser['status'] = 'activo'): Dispenser => ({
@@ -98,7 +98,7 @@ test('lecturasMantenimientoCierre: completa la de mantenimiento sin final y crea
     { dispenserId: 'p2-B-2', dispenserName: 'Manguera 2', face: 'B', pumpId: 'p2', pumpName: 'Bomba 02', fuelId: 'super', fuelName: 'Súper' },
   ];
   const previas = [{ date: '2099-03-18', dispenserId: 'p2-B-1', finalReading: 9000, status: 'activo' as const }, { date: '2099-03-19', dispenserId: 'p2-B-1', finalReading: 9100, status: 'mantenimiento' as const }];
-  const out = lecturasMantenimientoCierre({ fecha: '2099-03-20', diarias, enMantenimiento: enMant, previas, autor: 'a@uno.local', ahora: 'T' });
+  const out = lecturasMantenimientoCierre({ fecha: '2099-03-20', diarias, enMantenimiento: enMant, previas, autor: 'a@uno.local', ahora: 'T', precios: { super: 50 }, creadaEn: '2099-03-20T06:00:00.000Z' });
   assert.deepEqual(out.map(r => [r.dispenserId, r.initialReading, r.finalReading, r.liters, r.status]), [
     ['p1-A-1', 500, 500, 0, 'mantenimiento'],
     ['p2-B-1', 9000, 9000, 0, 'mantenimiento'], // última final fiable (ignora la de mantenimiento)
@@ -106,9 +106,24 @@ test('lecturasMantenimientoCierre: completa la de mantenimiento sin final y crea
   ]);
   assert.equal(out[1].previousFinal, 9000);
   assert.equal(out[0].closedBy, 'a@uno.local');
+  // La fabricada lleva el precio de su fecha y la hora de apertura del día (no "ahora").
+  assert.equal(out[1].fuelPrice, 50);
+  assert.equal(out[1].createdAt, '2099-03-20T06:00:00.000Z');
+  // Día pasado: no se fabrican lecturas, solo se completan las existentes.
+  assert.deepEqual(lecturasMantenimientoCierre({ fecha: '2099-03-20', diarias, enMantenimiento: [], previas, autor: 'a', ahora: 'T' }).map(r => r.dispenserId), ['p1-A-1']);
 });
 
-test('manguerasEnMantenimiento: bomba inactiva o dispensador no activo', () => {
+test('manguerasEnMantenimiento: solo dispensador en mantenimiento de bomba activa (bomba retirada no)', () => {
   const pumps = [pump('p1', 'Bomba 01', [[disp('p1', 'A', 1, 'diesel'), disp('p1', 'A', 2, 'super', 'mantenimiento')]]), { ...pump('p2', 'Bomba 02', [[disp('p2', 'A', 1, 'diesel')]]), isActive: false }];
-  assert.deepEqual(manguerasEnMantenimiento(pumps).map(m => m.dispenserId), ['p1-A-2', 'p2-A-1']);
+  assert.deepEqual(manguerasEnMantenimiento(pumps).map(m => m.dispenserId), ['p1-A-2']);
+});
+
+test('cierreDiaPasadoEnCuadro: día pasado reabierto sin turnos se cierra en el Cuadro aunque hoy haya turnos', () => {
+  const base = { esHoy: false, cerrado: false, lecturas: 3, turnosEseDia: 0, puedeCerrarDia: true };
+  assert.equal(cierreDiaPasadoEnCuadro(base), true);
+  assert.equal(cierreDiaPasadoEnCuadro({ ...base, turnosEseDia: 2 }), false); // con turnos: desde Turnos
+  assert.equal(cierreDiaPasadoEnCuadro({ ...base, esHoy: true }), false); // hoy: Lectura final
+  assert.equal(cierreDiaPasadoEnCuadro({ ...base, cerrado: true }), false);
+  assert.equal(cierreDiaPasadoEnCuadro({ ...base, puedeCerrarDia: false }), false);
+  assert.equal(cierreDiaPasadoEnCuadro({ ...base, lecturas: 0 }), false);
 });

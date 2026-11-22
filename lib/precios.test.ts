@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calcularVigencia, leerPrecio, ordenarPorVigencia, preciosDeLectura, preciosVigentesEn, precioVigente, proximoPrecio, validarPrecios, vigenciaDe } from './precios.ts';
+import { calcularVigencia, leerPrecio, ordenarPorVigencia, preciosAntesDe, preciosDeLectura, preciosVigentesEn, precioVigente, proximoPrecio, validarPrecios, vigenciaDe } from './precios.ts';
 import { calcVenta } from './totalizadores.ts';
 
 const P = (id: string, vigenteDesde: string | undefined, timestamp: number, superP = 37) =>
@@ -87,4 +87,22 @@ test('variación (alerta 15 %) contra el precio vigente en la fecha de la vigenc
   const v = validarPrecios({ super: '44', regular: '32', diesel: '40' }, base);
   assert.equal(v.requiereConfirmacion, false);
   assert.equal(validarPrecios({ super: '44', regular: '32', diesel: '40' }, preciosVigentesEn(h, '2026-11-22T06:00:00.000Z') ?? base).requiereConfirmacion, true);
+});
+
+test('vigencia comparada como fecha: sin milisegundos rige desde el mismo instante', () => {
+  const h = [P('a', '2026-10-01T06:00:00.000Z', 1, 35), P('b', '2026-11-01T06:00:00Z', 2, 38)];
+  assert.equal(preciosDeLectura(h, { date: '2026-11-01' })?.super, 38); // 00:00 HN = 06:00Z
+  assert.equal(precioVigente(h, '2026-11-01T05:59:59.999Z')?.id, 'a');
+});
+
+test('preciosDeLectura: createdAt lejos de su día (carga tardía) → 00:00 HN de su fecha', () => {
+  const h = [P('a', '2026-10-01T06:00:00.000Z', 1, 35), P('b', '2026-11-01T06:00:00.000Z', 2, 38)];
+  assert.equal(preciosDeLectura(h, { date: '2026-10-15', createdAt: '2026-11-10T15:00:00.000Z' })?.super, 35);
+  assert.equal(preciosDeLectura(h, { date: '2026-10-31', createdAt: '2026-11-01T07:00:00.000Z' })?.super, 38); // ±1 día: manda createdAt
+});
+
+test('preciosAntesDe: excluye el precio que empieza justo en esa vigencia', () => {
+  const h = [P('a', '2026-11-01T06:00:00.000Z', 1, 35), P('b', '2026-11-23T06:00:00.000Z', 2, 42)];
+  assert.equal(preciosAntesDe(h, '2026-11-23T06:00:00.000Z')?.super, 35);
+  assert.equal(preciosAntesDe(h, '2026-11-24T06:00:00.000Z')?.super, 42);
 });

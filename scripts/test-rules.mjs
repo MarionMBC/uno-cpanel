@@ -47,6 +47,23 @@ async function commit(tk, writes) {
   });
   return r.status;
 }
+// Escritura parcial (updateMask) con campos de hora del servidor (serverTimestamp → request.time).
+async function opTs(tk, path, data, tsFields = []) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (tk) headers.Authorization = `Bearer ${tk}`;
+  const r = await fetch(`${FS}:commit`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ writes: [{
+      update: { name: `${DOCS}/${path}`, fields: JSON.parse(body(data)).fields },
+      updateMask: { fieldPaths: Object.keys(data) },
+      updateTransforms: tsFields.map(f => ({ fieldPath: f, setToServerValue: 'REQUEST_TIME' })),
+    }] }),
+  });
+  return r.status;
+}
+// TASK-023: cerrar y reabrir el día firmados por la sesión, con hora del servidor.
+const cerrarDia = (tk, path, quien, extra = {}) => opTs(tk, path, { status: 'cerrado', closedBy: quien, ...extra }, ['closedAt']);
+const reabrirDia = (tk, path, quien, motivo = 'corregir lecturas', extra = {}) => opTs(tk, path, { status: 'en_proceso', reopenedBy: quien, reopenReason: motivo, ...extra }, ['reopenedAt']);
 // Escritura de preparación con la credencial de administrador del emulador (ignora reglas).
 const owner = (method, path, data) => fetch(`${FS}/${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' }, body: data ? body(data) : undefined });
 
@@ -125,7 +142,11 @@ caso('registrado sin verificar crea rol', await op(intruso, 'PATCH', `roles/hack
 const dia = `2099-01-${String(run % 28 + 1).padStart(2, '0')}`;
 caso('operador crea día en proceso', await op(operador, 'PATCH', `dayStatus/${dia}`, { status: 'en_proceso' }), true);
 caso('consulta (sin canCloseDay) cierra el día', await op(consulta, 'PATCH', `dayStatus/${dia}`, { status: 'cerrado' }), false);
-caso('admin cierra el día', await op(admin, 'PATCH', `dayStatus/${dia}`, { status: 'cerrado' }), true);
+caso('admin cierra el día sin firma', await op(admin, 'PATCH', `dayStatus/${dia}`, { status: 'cerrado' }), false);
+caso('admin cierra el día firmando como otro', await cerrarDia(admin, `dayStatus/${dia}`, 'operador@uno.local'), false);
+caso('admin cierra el día con closedAt inventado', await op(admin, 'PATCH', `dayStatus/${dia}`, { status: 'cerrado', closedBy: 'admin@uno.local', closedAt: '2099-01-01T00:00:00.000Z' }), false);
+caso('admin cierra el día (firma + hora del servidor)', await cerrarDia(admin, `dayStatus/${dia}`, 'admin@uno.local'), true);
+caso('admin cambia closedBy de un día cerrado', await op(admin, 'PATCH', `dayStatus/${dia}`, { closedBy: 'otro@uno.local' }), false);
 { // borrar el campo status = reabrir
   const r = await fetch(`${FS}/dayStatus/${dia}?updateMask.fieldPaths=status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${consulta}` }, body: JSON.stringify({ fields: {} }) });
   caso('consulta borra status de día cerrado (reabrir)', r.status, false);
@@ -156,6 +177,8 @@ caso('operador firma auditoría con nombre ajeno', await op(operador, 'PATCH', `
   caso('admin (canCloseDay) escribe tramos', r2.status, true);
 }
 caso('lectura con fecha mal formada', await op(operador, 'PATCH', `readings/fake_${run}`, { date: '2026-11-05x', initialReading: 1 }), false);
+caso('admin crea día ya reabierto (con campos de reapertura)', await op(admin, 'PATCH', `dayStatus/2099-04-0${run % 9 + 1}`, { status: 'en_proceso', reopenedBy: 'admin@uno.local', reopenReason: 'xxxxx' }), false);
+caso('admin crea día cerrado con firma', await cerrarDia(admin, `dayStatus/2099-04-1${run % 9 + 1}`, 'admin@uno.local'), true);
 caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-05x`, { status: 'en_proceso' }), false);
 
 // ─── TASK-019: turnos, lecturas por turno y arqueo por bombero ───
@@ -219,13 +242,25 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   caso('operador cierra turno (turno + puntero en una transacción)', await cerrarT(operador, sid, turnoDoc), true);
   caso('operador modifica turno cerrado', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'abierto' }), false);
   caso('operador cambia final con turno cerrado', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 160 }), false);
+  // consulta no tiene canCloseDay: es el bombero puro (operador2 tiene canCloseDay en la semilla).
+  caso('bombero marca su arqueo como recalculado', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { recalculatedBy: 'consulta@uno.local' })), false);
+  caso('bombero declara a nombre de otro (declaredBy ajeno)', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { declaredBy: 'admin@uno.local' })), false);
+  caso('encargado recibe arqueo firmando como otro', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'admin@uno.local' })), false);
   caso('encargado recibe arqueo', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'operador@uno.local' })), true);
+  // Recálculo de TASK-022: esperado nuevo, firma del recálculo y recepción anulada (campo borrado).
+  { const rec = arq('consulta@uno.local', { expectedSales: 70, recalculatedBy: 'operador@uno.local', recalculatedAt: '2099-01-01T12:00:00.000Z' });
+    const r = await fetch(`${FS}/cashCounts/${sid}_consulta@uno.local?${[...Object.keys(rec), 'receivedBy', 'receivedAt'].map(k => `updateMask.fieldPaths=${k}`).join('&')}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${operador}` }, body: body(rec) });
+    caso('encargado recalcula arqueo (TASK-022) y anula la recepción', r.status, true); }
+  caso('encargado recalcula firmando como otro', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { recalculatedBy: 'admin@uno.local' })), false);
+  caso('arqueo con notas de más de 500', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, notes: 'x'.repeat(501) })), false);
+  caso('arqueo con nombre no texto', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { name: 5 })), false);
+  caso('(prep) encargado vuelve a recibir', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'operador@uno.local' })), true);
   caso('bombero cambia arqueo ya recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 1 })), false);
   caso('bombero (operador2) declara su arqueo', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), true);
   caso('admin borra arqueo', await op(admin, 'DELETE', `cashCounts/${sid}_consulta@uno.local`), false);
   caso('admin borra turno', await op(admin, 'DELETE', `shifts/${sid}`), false);
   // Día cerrado: no se abren turnos, no se tocan lecturas de turno ni arqueos (hay que reabrir el día).
-  caso('(prep) admin cierra el día del turno', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'cerrado' }), true);
+  caso('(prep) admin cierra el día del turno', await cerrarDia(admin, `dayStatus/${fT}`, 'admin@uno.local'), true);
   caso('operador abre turno en día cerrado', await abrir(operador, sid2, { ...turnoDoc, templateId: `${tpl}B` }), false);
   caso('admin abre turno en día cerrado', await abrir(admin, sid2, { ...turnoDoc, templateId: `${tpl}B` }), false);
   caso('encargado corrige arqueo recibido con el día cerrado', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, receivedBy: 'operador@uno.local' })), false);
@@ -238,11 +273,19 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   caso('operador crea lectura de turno en día cerrado', await op(operador, 'PATCH', `shiftReadings/${sid3}_p1-A-2`, { shiftId: sid3, dispenserId: 'p1-A-2', date: fT, initialReading: 100 }), false);
   caso('operador guarda final de turno en día cerrado', await op(operador, 'PATCH', `shiftReadings/${sid3}_p1-A-1`, { shiftId: sid3, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 150 }), false);
   // TASK-023: reabrir (hoy o pasado) exige motivo, firma propia y reopenedAt nuevo.
-  caso('admin reabre el día sin motivo', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso' }), false);
-  caso('admin reabre el día con motivo corto', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'x', reopenedBy: 'admin@uno.local', reopenedAt: '2099-01-01T12:00:00.000Z' }), false);
-  caso('admin reabre el día firmando como otro', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'corregir lecturas', reopenedBy: 'operador@uno.local', reopenedAt: '2099-01-01T12:00:00.000Z' }), false);
-  caso('consulta (sin canCloseDay) reabre el día con motivo', await op(consulta, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'corregir lecturas', reopenedBy: 'consulta@uno.local', reopenedAt: '2099-01-01T12:00:00.000Z' }), false);
-  caso('(prep) admin reabre el día', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenReason: 'corregir lecturas', reopenedBy: 'admin@uno.local', reopenedAt: `2099-01-01T12:00:${String(run % 60).padStart(2, '0')}.000Z` }), true);
+  caso('admin reabre el día sin motivo', await opTs(admin, `dayStatus/${fT}`, { status: 'en_proceso', reopenedBy: 'admin@uno.local' }, ['reopenedAt']), false);
+  caso('admin reabre el día con motivo corto', await reabrirDia(admin, `dayStatus/${fT}`, 'admin@uno.local', 'x'), false);
+  caso('admin reabre el día con motivo de espacios', await reabrirDia(admin, `dayStatus/${fT}`, 'admin@uno.local', '        '), false);
+  caso('admin reabre el día con motivo de más de 500', await reabrirDia(admin, `dayStatus/${fT}`, 'admin@uno.local', 'x'.repeat(501)), false);
+  caso('admin reabre el día firmando como otro', await reabrirDia(admin, `dayStatus/${fT}`, 'operador@uno.local'), false);
+  caso('admin reabre el día con reopenedAt inventado', await op(admin, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenedBy: 'admin@uno.local', reopenReason: 'corregir lecturas', reopenedAt: '2099-01-01T12:00:00.000Z' }), false);
+  caso('admin reabre el día y cambia closedBy', await reabrirDia(admin, `dayStatus/${fT}`, 'admin@uno.local', 'corregir lecturas', { closedBy: 'nadie' }), false);
+  caso('consulta (sin canCloseDay) reabre el día con motivo', await reabrirDia(consulta, `dayStatus/${fT}`, 'consulta@uno.local'), false);
+  caso('(prep) admin reabre el día', await reabrirDia(admin, `dayStatus/${fT}`, 'admin@uno.local'), true);
+  caso('operador (activo) reescribe reopenedBy del día reabierto', await op(operador, 'PATCH', `dayStatus/${fT}`, { status: 'en_proceso', reopenedBy: 'otro@uno.local' }), false);
+  caso('consulta reescribe el motivo de reapertura', await op(consulta, 'PATCH', `dayStatus/${fT}`, { reopenReason: 'zzzzz' }), false);
+  caso('admin reescribe el motivo de reapertura fuera de la transición', await op(admin, 'PATCH', `dayStatus/${fT}`, { reopenReason: 'otro motivo' }), false);
+  caso('operador guarda fondo en día reabierto (sin tocar firmas)', await op(operador, 'PATCH', `dayStatus/${fT}`, { cashFund: 10 }), true);
   caso('operador abre turno con el día reabierto (turno + lecturas + diaria + puntero, como abrirTurno)', await abrir(operador, sid2, { ...turnoDoc, templateId: `${tpl}B` }, [
     [`shiftReadings/${sid2}_p1-A-1`, { shiftId: sid2, dispenserId: 'p1-A-1', date: fT, initialReading: 150 }],
     [`readings/${fT}_p1-A-9${run % 1000}`, { date: fT, dispenserId: `p1-A-9${run % 1000}`, initialReading: 150, fuelPrice: 34.05, status: 'activo' }],

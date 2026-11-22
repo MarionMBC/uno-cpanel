@@ -1,7 +1,7 @@
 // Turnos y arqueo por bombero (TASK-019, auditoría TASK-004 §5 / B1–B8).
 // Todo detrás de settings/operacion.shiftsEnabled (default false). Lógica pura: se prueba con `npm test`.
 import type { AsignacionTurno, CashCount, CorteLectura, DailyReading, Operacion, PlantillaTurno, Shift, ShiftReading, TramoVenta } from '../types';
-import { calcVenta, round, rompeContinuidad, type LecturaVenta, type PreciosPorLitro, type Venta } from './totalizadores.ts';
+import { calcVenta, round, rompeContinuidad, type LecturaVenta, type PreciosPorLitro, type PreciosRespaldo, type Venta } from './totalizadores.ts';
 
 // ─── B1 configuración ─────────────────────────────────────────────────────────
 
@@ -164,14 +164,14 @@ export function preciosCambiados(delTurno: Record<string, number>, vigentes: Pre
 }
 
 /** Tramos de una lectura de turno: inicial → corte₁ → … → final, cada uno con su precio. */
-export function tramosLectura(sr: Pick<ShiftReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax' | 'cuts'>): LecturaVenta[] {
+export function tramosLectura(sr: Pick<ShiftReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax' | 'cuts'> & Partial<Pick<ShiftReading, 'date'>>): LecturaVenta[] {
   const cortes: CorteLectura[] = sr.cuts ?? [];
   const puntos = [sr.initialReading, ...cortes.map(c => c.reading)];
   const precios = [...cortes.map(c => c.fuelPrice), sr.fuelPrice];
   return puntos.map((ini, i) => {
     const fin = i < cortes.length ? cortes[i].reading : sr.finalReading;
     return {
-      fuelId: sr.fuelId, fuelPrice: precios[i], initialReading: ini, finalReading: fin, status: sr.status,
+      fuelId: sr.fuelId, fuelPrice: precios[i], initialReading: ini, finalReading: fin, status: sr.status, date: sr.date,
       // La vuelta a cero cae en el tramo donde el fin es menor al inicio.
       rollover: sr.rollover === true && fin !== undefined && fin < ini, meterMax: sr.meterMax,
     };
@@ -186,7 +186,7 @@ export interface VentaTurno {
 }
 
 /** Venta de una lectura de turno: suma de calcVenta por tramo (cada tramo a su precio). */
-export function calcVentaTurno(sr: Parameters<typeof tramosLectura>[0], precios: PreciosPorLitro): VentaTurno {
+export function calcVentaTurno(sr: Parameters<typeof tramosLectura>[0], precios: PreciosRespaldo): VentaTurno {
   const tramos = tramosLectura(sr).map(t => calcVenta(t, precios));
   const mal = tramos.find(t => t.estado !== 'ok');
   if (mal) return { estado: mal.estado, litros: 0, total: 0, tramos };
@@ -217,7 +217,7 @@ export interface VentaBombero {
 }
 
 /** Ventas por bombero en un turno (sus mangueras). */
-export function ventasPorBombero(shift: Pick<Shift, 'assignments'>, lecturas: ShiftReading[], precios: PreciosPorLitro): VentaBombero[] {
+export function ventasPorBombero(shift: Pick<Shift, 'assignments'>, lecturas: ShiftReading[], precios: PreciosRespaldo): VentaBombero[] {
   return shift.assignments.map(a => {
     let litros = 0, total = 0, pendientes = 0;
     lecturas.filter(r => a.dispenserIds.includes(r.dispenserId)).forEach(r => {
@@ -281,7 +281,7 @@ const etiquetaManguera = (r: Pick<ShiftReading, 'pumpName' | 'face' | 'dispenser
   `${r.pumpName} ${r.face}-${(r.dispenserName.match(/(\d+)\s*$/) || ['', r.dispenserName])[1]} ${r.fuelName}`;
 
 /** Hoja por turno: lecturas por manguera (con tramos) y arqueo por bombero. */
-export function turnoAoa(t: TurnoConDatos, precios: PreciosPorLitro): (string | number)[][] {
+export function turnoAoa(t: TurnoConDatos, precios: PreciosRespaldo): (string | number)[][] {
   const { shift: s } = t;
   const aoa: (string | number)[][] = [
     [`${s.date} · ${s.name}`, s.status === 'cerrado' ? 'CERRADO' : 'ABIERTO', `Abrió: ${s.openedByName}`, s.closedByName ? `Cerró: ${s.closedByName}` : '', '', '', ''],
@@ -320,7 +320,7 @@ export function turnoAoa(t: TurnoConDatos, precios: PreciosPorLitro): (string | 
 }
 
 /** Hoja consolidada del día: una fila por turno y bombero, más el total. */
-export function consolidadoAoa(fecha: string, turnos: TurnoConDatos[], precios: PreciosPorLitro): (string | number)[][] {
+export function consolidadoAoa(fecha: string, turnos: TurnoConDatos[], precios: PreciosRespaldo): (string | number)[][] {
   const aoa: (string | number)[][] = [[`Resumen por turno y bombero · ${fecha}`, '', '', '', '', '', ''], ['TURNO', 'BOMBERO', 'LITROS', 'VENTAS', 'CAMBIO', 'DECLARADO', 'DIFERENCIA']];
   let litros = 0, ventas = 0, dif = 0;
   turnos.forEach(t => {

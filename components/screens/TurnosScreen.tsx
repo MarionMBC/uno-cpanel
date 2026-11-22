@@ -41,8 +41,8 @@ interface BomberoBorrador { email: string; name: string; fondo: string; dispense
 interface ArqueoBorrador { cash: string; card: string; credits: string; partialDrops: string; notes: string }
 
 export default function TurnosScreen() {
-  const { pumps, roles, users, currentPrices, operacion, today, addAuditEntry } = useApp();
-  const { appUser } = useAuth();
+  const { pumps, roles, users, currentPrices, preciosLectura, operacion, today, addAuditEntry } = useApp();
+  const { appUser, user } = useAuth();
   const toast = useToast();
   const role = roles.find(r => r.id === appUser?.roleId);
   const puedeCerrar = role?.permissions?.canCloseDay === true;
@@ -260,7 +260,8 @@ export default function TurnosScreen() {
 
   // ─── Arqueo (B5) ───
   const [arq, setArq] = useState<Record<string, ArqueoBorrador>>({});
-  const ventasSel = sel ? ventasPorBombero(sel, lecturasSel, precios) : [];
+  // Esperado del arqueo y Excel: lecturas sin fuelPrice al precio de su fecha (TASK-023).
+  const ventasSel = sel ? ventasPorBombero(sel, lecturasSel, preciosLectura) : [];
   const visibles = sel ? sel.assignments.filter(a => puedeCerrar || a.email === miCorreo) : [];
 
   const borradorDe = (email: string): ArqueoBorrador => {
@@ -311,7 +312,7 @@ export default function TurnosScreen() {
     setOcupado(true);
     try {
       // Mangueras en mantenimiento: misma regla que el cierre sin turnos (final = inicial, 0 L).
-      const mant = await cerrarDiaConMantenimiento(fecha, pumps, miCorreo);
+      const mant = await cerrarDiaConMantenimiento({ fecha, hoy: today, pumps, autorEmail: user?.email || miCorreo, precios: preciosLectura({ date: fecha }) });
       toast.success('Día cerrado', `${fechaHN(fecha)} · todos los turnos cerrados y arqueados.`);
       await auditar('Cierre del día', fechaHN(fecha), `Con turnos: ${datos.shifts.map(s => s.name).join(', ')}${mant ? ` · ${mant} manguera(s) en mantenimiento con 0 L` : ''}`, { icon: 'lock' });
     } catch (e) {
@@ -329,11 +330,11 @@ export default function TurnosScreen() {
     const turnos = datos.shifts.map(s => ({ shift: s, lecturas: datos.lecturas.filter(r => r.shiftId === s.id), arqueos: datos.arqueos.filter(c => c.shiftId === s.id) }));
     if (turnos.length === 0) { toast.info('Sin turnos', 'No hay turnos en la fecha.'); return; }
     const wb = XLSX.utils.book_new();
-    const cons = XLSX.utils.aoa_to_sheet(consolidadoAoa(fechaHN(fecha), turnos, precios));
+    const cons = XLSX.utils.aoa_to_sheet(consolidadoAoa(fechaHN(fecha), turnos, preciosLectura));
     cons['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }];
     XLSX.utils.book_append_sheet(wb, cons, 'Consolidado');
     turnos.forEach(t => {
-      const ws = XLSX.utils.aoa_to_sheet(turnoAoa(t, precios));
+      const ws = XLSX.utils.aoa_to_sheet(turnoAoa(t, preciosLectura));
       ws['!cols'] = [{ wch: 30 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 28 }];
       XLSX.utils.book_append_sheet(wb, ws, `${t.shift.templateId} ${t.shift.name}`.slice(0, 31));
     });

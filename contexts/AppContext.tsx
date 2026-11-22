@@ -23,6 +23,8 @@ interface AppContextType {
   auditLog: AuditEntry[];
   /** Registra en auditoría. Quién (uid, nombre de la ficha, rol) y cuándo (`at` del servidor) los pone el contexto. */
   addAuditEntry: (entry: AuditInput) => Promise<void>;
+  /** Entrada de auditoría firmada por la sesión, para escribirla dentro de una transacción (at = hora del servidor). */
+  entradaAuditoria: (entry: AuditInput) => Record<string, unknown>;
   /** Historial ordenado por vigencia (más reciente primero). */
   priceHistory: FuelPrice[];
   addPriceEntry: (entry: FuelPrice) => Promise<void>;
@@ -293,6 +295,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const e = armarEntrada(entry, { uid: appUser.uid, name: appUser.name, roleName: rolNombre }, new Date());
     await addDoc(collection(db, 'auditLog'), { ...e, at: serverTimestamp() });
   }, [appUser, rolNombre]);
+  const entradaAuditoria = useCallback((entry: AuditInput): Record<string, unknown> => {
+    if (!appUser?.uid) throw new Error('Sin sesión: no se puede registrar en auditoría.');
+    return { ...armarEntrada(entry, { uid: appUser.uid, name: appUser.name, roleName: rolNombre }, new Date()), at: serverTimestamp() };
+  }, [appUser, rolNombre]);
 
   const addPriceEntry = useCallback(async (entry: FuelPrice) => {
     const { id: _id, ...rest } = entry as FuelPrice & { id?: string };
@@ -360,7 +366,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pumps, setPumps,
       dayStatus, setDayStatus,
       dayData, updateDayData,
-      auditLog, addAuditEntry,
+      auditLog, addAuditEntry, entradaAuditoria,
       priceHistory, addPriceEntry,
       currentPrices, setCurrentPrices, precioActual, precioProximo, preciosEn, preciosLectura,
       readings, saveReadings, createInitialReadings,
