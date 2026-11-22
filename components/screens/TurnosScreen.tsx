@@ -3,7 +3,7 @@
 // B2–B8 (TASK-019): turnos, asignación de bomberos, lecturas por turno, corte de precio, arqueo y cierre del día.
 // Solo aparece en el menú con settings/operacion.shiftsEnabled.
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import { db } from '@/lib/firebase';
 import { useApp } from '@/contexts/AppContext';
@@ -15,13 +15,15 @@ import Button from '@/components/ui/Button';
 import Icon from '@/components/ui/Icon';
 import TextField from '@/components/ui/TextField';
 import Modal from '@/components/overlays/Modal';
+import ReabrirDiaModal from '@/components/overlays/ReabrirDiaModal';
 import { AsignacionTurno, AuditEntry, CashCount, DailyReading, PlantillaTurno, Shift, ShiftReading } from '@/types';
 import { idLectura, METER_MAX_DEFAULT } from '@/lib/totalizadores';
 import {
   bloqueoCierreDia, calcArqueo, calcVentaTurno, consolidadoAoa, fechaDeTurno, idTurno, inicialEncadenada, InicialSugerida,
   plantillaVigente, preciosCambiados, rompeCadena, turnoAoa, validarArqueo, validarAsignaciones, ventasPorBombero,
 } from '@/lib/turnos';
-import { abrirTurno, AperturaManguera, cerrarTurno, cortarPrecio, guardarArqueo, refEstado } from '@/lib/turnosDb';
+import { abrirTurno, AperturaManguera, cerrarTurno, corregirFinalTurno, cortarPrecio, guardarArqueo, lecturaTurnoDe, refEstado } from '@/lib/turnosDb';
+import { cerrarDiaConMantenimiento } from '@/lib/diaDb';
 import { fmtL, fmtNum } from '@/lib/utils';
 
 const fechaHN = (iso: string) => iso.split('-').reverse().join('/');
@@ -37,14 +39,16 @@ const etiqueta = (r: Pick<ShiftReading, 'pumpName' | 'face' | 'dispenserName'>) 
 interface FilaApertura { base: AperturaManguera['base']; sugerida: InicialSugerida; inicial: string; motivo: string }
 interface BomberoBorrador { email: string; name: string; fondo: string; dispenserIds: string[] }
 interface ArqueoBorrador { cash: string; card: string; credits: string; partialDrops: string; notes: string }
+interface CorreccionTurno { r: ShiftReading; valor: string; rollover: boolean; motivo: string }
 
 export default function TurnosScreen() {
-  const { pumps, roles, users, currentPrices, operacion, today, addAuditEntry } = useApp();
-  const { appUser } = useAuth();
+  const { pumps, roles, users, currentPrices, preciosLectura, operacion, today, addAuditEntry } = useApp();
+  const { appUser, user } = useAuth();
   const toast = useToast();
   const role = roles.find(r => r.id === appUser?.roleId);
   const puedeCerrar = role?.permissions?.canCloseDay === true;
-  const miCorreo = (appUser?.email || '').toLowerCase();
+  // Las reglas comparan con el correo de la sesión de Firebase Auth; la ficha es respaldo.
+  const miCorreo = (user?.email || appUser?.email || '').toLowerCase();
   const autor = { email: miCorreo, name: appUser?.name || miCorreo };
   const precios = currentPrices as unknown as Record<string, number>;
 
@@ -73,7 +77,7 @@ export default function TurnosScreen() {
       parcial.shifts = s.docs.map(d => ({ id: d.id, ...d.data() } as Shift)).sort((a, b) => a.openedAt.localeCompare(b.openedAt)); publicar();
     }, err);
     const u2 = onSnapshot(query(collection(db, 'shiftReadings'), where('date', '==', fecha)), s => {
-      parcial.lecturas = s.docs.map(d => ({ id: d.id, ...d.data() } as ShiftReading)); publicar();
+      parcial.lecturas = s.docs.map(d => lecturaTurnoDe(d.id, d.data())); publicar();
     }, err);
     const u3 = onSnapshot(query(collection(db, 'cashCounts'), where('date', '==', fecha)), s => {
       parcial.arqueos = s.docs.map(d => ({ id: d.id, ...d.data() } as CashCount)); publicar();
@@ -226,6 +230,37 @@ export default function TurnosScreen() {
     }
   };
 
+  // ─── Corregir una final con el turno cerrado (TASK-022) ───
+  const [corr, setCorr] = useState<CorreccionTurno | null>(null);
+  const puedeCorregir = puedeCerrar && !diaCerrado && sel?.status === 'cerrado';
+  const confirmarCorreccion = async () => {
+    if (!corr || !sel) return;
+    const n = num(corr.valor);
+    if (!Number.isFinite(n) || n < 0) { toast.error('Valor inválido', 'Ingresa un número mayor o igual a cero.'); return; }
+    if (corr.motivo.trim().length < MOTIVO_MIN) { toast.error('Falta el motivo', `Escribe el motivo de la corrección (mínimo ${MOTIVO_MIN} caracteres).`); return; }
+    setOcupado(true);
+    const r = corr.r;
+    try {
+      const res = await corregirFinalTurno({ shiftId: sel.id as string, dispenserId: r.dispenserId, finalReading: n, rollover: corr.rollover, motivo: corr.motivo, precios, autor });
+      setCorr(null);
+      const arq = res.arqueo?.recepcionAnulada ? ' El arqueo del bombero se recalculó: vuelve a recibirlo.' : res.arqueo ? ' El arqueo del bombero se recalculó.' : '';
+      toast.success('Final corregida', `${etiqueta(r)}: ${res.antes} → ${n}.${arq}${res.cierraRuptura ? ' La diferencia de continuidad con el turno siguiente quedó cerrada.' : ''}`);
+      if (res.avisoContinuidad) toast.warning('Continuidad pendiente', res.avisoContinuidad);
+      const rollTxt = res.rolloverAntes !== corr.rollover ? ` · vuelta a cero ${res.rolloverAntes ? 'sí' : 'no'} → ${corr.rollover ? 'sí' : 'no'}` : corr.rollover ? ' · con vuelta a cero' : '';
+      const diariaTxt = res.finalDiaria ? ` · final del día ${res.finalDiaria.antes ?? '—'} → ${res.finalDiaria.despues}` : '';
+      const arqTxt = res.arqueo ? ` · arqueo esperado ${fmtL(res.arqueo.antes.expected)} → ${fmtL(res.arqueo.despues.expected)}, diferencia ${fmtL(res.arqueo.antes.difference)} → ${fmtL(res.arqueo.despues.difference)}${res.arqueo.recepcionAnulada ? ', recepción anulada' : ''}` : '';
+      const contTxt = res.cierraRuptura ? ' · continuidad con el turno siguiente cerrada' : res.avisoContinuidad ? ` · ${res.avisoContinuidad}` : '';
+      await auditar('Corrección de final de turno', `${etiqueta(r)} ${r.fuelName} · ${sel.name} ${fechaHN(sel.date)}`,
+        `Turno cerrado${rollTxt}${diariaTxt}${arqTxt}${contTxt}`,
+        { before: res.antes, after: n, reason: corr.motivo.trim(), icon: 'edit' });
+    } catch (e) {
+      console.error(e);
+      toast.error('No se corrigió', e instanceof Error ? e.message : 'Revisa la conexión.');
+    } finally {
+      setOcupado(false);
+    }
+  };
+
   // ─── Corte de precio (B6) ───
   const [corte, setCorte] = useState<Record<string, string> | null>(null);
   const lecturasCorte = abierto ? datos.lecturas.filter(r => r.shiftId === abierto.id && cambiados.includes(r.fuelId)) : [];
@@ -258,7 +293,8 @@ export default function TurnosScreen() {
 
   // ─── Arqueo (B5) ───
   const [arq, setArq] = useState<Record<string, ArqueoBorrador>>({});
-  const ventasSel = sel ? ventasPorBombero(sel, lecturasSel, precios) : [];
+  // Esperado del arqueo y Excel: lecturas sin fuelPrice al precio de su fecha (TASK-023).
+  const ventasSel = sel ? ventasPorBombero(sel, lecturasSel, preciosLectura) : [];
   const visibles = sel ? sel.assignments.filter(a => puedeCerrar || a.email === miCorreo) : [];
 
   const borradorDe = (email: string): ArqueoBorrador => {
@@ -308,9 +344,10 @@ export default function TurnosScreen() {
     if (!puedeCerrar || razonesCierre.length > 0) return;
     setOcupado(true);
     try {
-      await setDoc(doc(db, 'dayStatus', fecha), { date: fecha, status: 'cerrado', closedBy: miCorreo, closedAt: new Date().toISOString() }, { merge: true });
+      // Mangueras en mantenimiento: misma regla que el cierre sin turnos (final = inicial, 0 L).
+      const mant = await cerrarDiaConMantenimiento({ fecha, hoy: today, pumps, autorEmail: user?.email || miCorreo, precios: preciosLectura({ date: fecha }) });
       toast.success('Día cerrado', `${fechaHN(fecha)} · todos los turnos cerrados y arqueados.`);
-      await auditar('Cierre del día', fechaHN(fecha), `Con turnos: ${datos.shifts.map(s => s.name).join(', ')}`, { icon: 'lock' });
+      await auditar('Cierre del día', fechaHN(fecha), `Con turnos: ${datos.shifts.map(s => s.name).join(', ')}${mant ? ` · ${mant} manguera(s) en mantenimiento con 0 L` : ''}`, { icon: 'lock' });
     } catch (e) {
       console.error(e);
       toast.error('No se cerró el día', 'Revisa la conexión.');
@@ -319,16 +356,18 @@ export default function TurnosScreen() {
     }
   };
 
+  const [reabrirFecha, setReabrirFecha] = useState<string | null>(null);
+
   // ─── Excel (B8) ───
   const exportar = () => {
     const turnos = datos.shifts.map(s => ({ shift: s, lecturas: datos.lecturas.filter(r => r.shiftId === s.id), arqueos: datos.arqueos.filter(c => c.shiftId === s.id) }));
     if (turnos.length === 0) { toast.info('Sin turnos', 'No hay turnos en la fecha.'); return; }
     const wb = XLSX.utils.book_new();
-    const cons = XLSX.utils.aoa_to_sheet(consolidadoAoa(fechaHN(fecha), turnos, precios));
+    const cons = XLSX.utils.aoa_to_sheet(consolidadoAoa(fechaHN(fecha), turnos, preciosLectura));
     cons['!cols'] = [{ wch: 14 }, { wch: 24 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }];
     XLSX.utils.book_append_sheet(wb, cons, 'Consolidado');
     turnos.forEach(t => {
-      const ws = XLSX.utils.aoa_to_sheet(turnoAoa(t, precios));
+      const ws = XLSX.utils.aoa_to_sheet(turnoAoa(t, preciosLectura));
       ws['!cols'] = [{ wch: 30 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 28 }];
       XLSX.utils.book_append_sheet(wb, ws, `${t.shift.templateId} ${t.shift.name}`.slice(0, 31));
     });
@@ -417,7 +456,9 @@ export default function TurnosScreen() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {diaCerrado ? <Badge tone="success" icon="lock">Día cerrado</Badge> : puedeCerrar && (
+            {diaCerrado && <Badge tone="success" icon="lock">Día cerrado</Badge>}
+            {diaCerrado && puedeCerrar && <Button variant="secondary" size="sm" icon="unlock" onClick={() => setReabrirFecha(fecha)}>Reabrir día</Button>}
+            {!diaCerrado && puedeCerrar && (
               <Button variant="primary" size="sm" icon="lock" disabled={ocupado || razonesCierre.length > 0} onClick={cerrarDia}>Cerrar día</Button>
             )}
             <Button variant="secondary" size="sm" icon="download" onClick={exportar}>Exportar Excel</Button>
@@ -449,6 +490,7 @@ export default function TurnosScreen() {
                   <tr style={{ background: '#f8fafc' }}>
                     <th style={{ ...th, textAlign: 'left' }}>Manguera</th><th style={{ ...th, textAlign: 'left' }}>Bombero</th>
                     <th style={th}>Inicial</th><th style={th}>Cortes</th><th style={th}>Final</th><th style={th}>Litros</th><th style={th}>Precio</th><th style={th}>Total</th>
+                    {puedeCorregir && <th style={th} />}
                   </tr>
                 </thead>
                 <tbody>
@@ -473,10 +515,18 @@ export default function TurnosScreen() {
                               </label>
                             </span>
                           ) : r.finalReading !== undefined ? fmtNum(r.finalReading, 3) : <Badge tone="warning" dot>Pendiente</Badge>}
+                          {r.correctedAt && <span title={`${r.correctedBy} · ${horaHN(r.correctedAt)}: ${r.correctionReason}`}> <Badge tone="info" icon="edit">corregida</Badge></span>}
                         </td>
                         <td style={td}>{v.estado === 'ok' ? fmtNum(v.litros, 3) : '—'}</td>
                         <td style={td}>{fmtNum(r.fuelPrice)}</td>
                         <td style={{ ...td, fontWeight: 700 }}>{v.estado === 'ok' ? fmtL(v.total) : '—'}</td>
+                        {puedeCorregir && (
+                          <td style={td}>
+                            {r.finalReading !== undefined && (
+                              <Button variant="ghost" size="sm" icon="edit" disabled={ocupado} onClick={() => setCorr({ r, valor: '', rollover: r.rollover === true, motivo: '' })}>Corregir</Button>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -528,6 +578,7 @@ export default function TurnosScreen() {
                   </div>
                   {diaCerrado && <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>Día cerrado: el arqueo no se modifica. Para corregirlo, reabre el día (con motivo).</div>}
                   {c?.receivedBy && <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>Recibido por {c.receivedBy} · {horaHN(c.receivedAt)}</div>}
+                  {c?.recalculatedAt && !c.receivedBy && <div style={{ fontSize: 11, color: '#b45309', marginTop: 6 }}>Esperado recalculado por una corrección de lectura ({horaHN(c.recalculatedAt)}): revísalo y vuelve a recibirlo.</div>}
                 </Card>
               );
             })}
@@ -604,6 +655,36 @@ export default function TurnosScreen() {
           </div>
         )}
       </Modal>
+
+      {/* Modal: corregir final de un turno cerrado */}
+      <Modal open={!!corr} onClose={() => setCorr(null)} icon="edit" iconTone="warning" title={corr ? `Corregir final · ${etiqueta(corr.r)} ${corr.r.fuelName}` : ''}
+        subtitle={corr && sel ? `${sel.name} · ${fechaHN(sel.date)} (turno cerrado). Se recalculan la venta del día y el arqueo del bombero; el valor anterior, el nuevo y el motivo quedan en la auditoría.` : ''}
+        footer={<>
+          <Button variant="secondary" onClick={() => setCorr(null)}>Cancelar</Button>
+          <Button variant="primary" icon="check" disabled={ocupado} onClick={confirmarCorreccion}>Guardar corrección</Button>
+        </>}>
+        {corr && (() => {
+          const n = num(corr.valor);
+          const v = Number.isFinite(n) ? calcVentaTurno({ ...corr.r, finalReading: n, rollover: corr.rollover }, precios) : null;
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 4, fontSize: 13 }}>
+                <span>Inicial{corr.r.cuts?.length ? ` (último corte ${fmtNum(corr.r.cuts[corr.r.cuts.length - 1].reading, 3)})` : ''}</span><b style={mono}>{fmtNum(corr.r.initialReading, 3)}</b>
+                <span>Final guardada</span><b style={mono}>{fmtNum(corr.r.finalReading ?? 0, 3)}{corr.r.rollover ? ' (vuelta a cero)' : ''}</b>
+                <span>Bombero</span><b>{corr.r.attendantName}</b>
+              </div>
+              <TextField label="Nueva final" value={corr.valor} autoFocus onChange={val => setCorr({ ...corr, valor: val })} />
+              <label style={{ fontSize: 12.5, color: '#475569' }}>
+                <input type="checkbox" checked={corr.rollover} onChange={ev => setCorr({ ...corr, rollover: ev.target.checked })} /> El totalizador dio la vuelta a cero
+              </label>
+              {v && <div style={{ fontSize: 12.5, color: v.estado === 'ok' ? '#166534' : '#b91c1c' }}>{v.estado === 'ok' ? `Venta del turno en esta manguera: ${fmtNum(v.litros, 3)} L · ${fmtL(v.total)}` : 'La final queda menor a la inicial o al último corte.'}</div>}
+              <TextField label="Motivo (obligatorio)" value={corr.motivo} placeholder="Ej.: final mal digitada, foto del totalizador" onChange={val => setCorr({ ...corr, motivo: val })} />
+            </div>
+          );
+        })()}
+      </Modal>
+
+      <ReabrirDiaModal fecha={reabrirFecha} onClose={() => setReabrirFecha(null)} />
 
       {/* Modal: corte de precio */}
       <Modal open={!!corte} onClose={() => setCorte(null)} icon="tag" iconTone="warning" title="Corte de precio"

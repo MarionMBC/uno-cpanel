@@ -22,23 +22,55 @@ export function vigenciaDe(p: ConVigencia): string {
   return '';
 }
 
+/** Milisegundos de una vigencia ISO (con o sin milisegundos: se compara como fecha, no como texto). NaN si no hay. */
+const ms = (iso: string) => (iso ? Date.parse(iso) : NaN);
+
 /** Historial ordenado por vigencia, más reciente primero (empate: la registrada después). */
 export function ordenarPorVigencia<T extends ConVigencia>(historial: T[]): T[] {
   return [...historial].sort((a, b) => {
-    const va = vigenciaDe(a), vb = vigenciaDe(b);
-    if (va !== vb) return va < vb ? 1 : -1;
+    const va = ms(vigenciaDe(a)), vb = ms(vigenciaDe(b));
+    const na = Number.isNaN(va), nb = Number.isNaN(vb);
+    if (na !== nb) return na ? 1 : -1;
+    if (!na && va !== vb) return vb - va;
     return (b.timestamp ?? 0) - (a.timestamp ?? 0);
   });
 }
 
 /** Entrada que rige en `instante` (ISO): la de vigencia más reciente que ya empezó. */
 export function precioVigente<T extends ConVigencia>(historial: T[], instante: string): T | null {
-  return ordenarPorVigencia(historial).find(p => { const v = vigenciaDe(p); return v !== '' && v <= instante; }) ?? null;
+  const t = ms(instante);
+  return ordenarPorVigencia(historial).find(p => ms(vigenciaDe(p)) <= t) ?? null;
+}
+
+/** Precios (Súper/Regular/Diésel) que rigen en `instante` (ISO), o null si aún no había ninguno. */
+export function preciosVigentesEn<T extends ConVigencia & Precios>(historial: T[], instante: string): Precios | null {
+  const p = precioVigente(historial, instante);
+  return p ? { super: p.super, regular: p.regular, diesel: p.diesel } : null;
+}
+
+/** Precios que regían justo antes de `instante` (excluye un precio que empieza exactamente ahí). */
+export function preciosAntesDe<T extends ConVigencia & Precios>(historial: T[], instante: string): Precios | null {
+  const t = Date.parse(instante);
+  return Number.isFinite(t) ? preciosVigentesEn(historial, new Date(t - 1).toISOString()) : null;
+}
+
+/**
+ * Precios con que se abrió una lectura vieja sin fuelPrice (TASK-023): los vigentes en su hora de creación
+ * o, sin hora (o si se creó lejos de su día, p. ej. cargada después), al inicio (00:00 Honduras) de su día.
+ * Null si no se puede saber (se usa el vigente de hoy).
+ */
+export function preciosDeLectura<T extends ConVigencia & Precios>(historial: T[], r: { date?: string; createdAt?: string }): Precios | null {
+  const fechaOk = !!r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date);
+  const creada = r.createdAt ? Date.parse(r.createdAt) : NaN;
+  const diaCreada = Number.isFinite(creada) ? diaOperativo(new Date(creada)) : null;
+  const creadaEnSuDia = diaCreada !== null && (!fechaOk || [sumarDias(r.date as string, -1), r.date, sumarDias(r.date as string, 1)].includes(diaCreada));
+  const instante = creadaEnSuDia ? new Date(creada).toISOString() : fechaOk ? instanteHN(r.date as string) : null;
+  return instante ? preciosVigentesEn(historial, instante) : null;
 }
 
 /** Próximo precio programado (vigencia futura más cercana), o null. */
 export function proximoPrecio<T extends ConVigencia>(historial: T[], instante: string): T | null {
-  const futuros = ordenarPorVigencia(historial).filter(p => vigenciaDe(p) > instante);
+  const futuros = ordenarPorVigencia(historial).filter(p => ms(vigenciaDe(p)) > ms(instante));
   return futuros.length ? futuros[futuros.length - 1] : null;
 }
 

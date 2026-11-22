@@ -31,7 +31,7 @@ function EstadoBadge({ f }: { f: FilaCuadro }) {
 }
 
 export default function ReporteDiarioScreen() {
-  const { pumps, readings, dayData, currentPrices, today } = useApp();
+  const { pumps, readings, dayData, preciosLectura, today } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const toastRef = useRef(toast);
@@ -65,7 +65,7 @@ export default function ReporteDiarioScreen() {
   const dia = esHoy ? dayData : otroListo?.dia ?? null;
 
   // Mismo cálculo que el Cuadro de totalizadores (calcVenta, precio de cada lectura); fechas pasadas desde las lecturas.
-  const cuadro = useMemo(() => buildCuadro(pumps, lecturas, currentPrices, { historico: !esHoy }), [pumps, lecturas, currentPrices, esHoy]);
+  const cuadro = useMemo(() => buildCuadro(pumps, lecturas, preciosLectura, { historico: !esHoy }), [pumps, lecturas, preciosLectura, esHoy]);
   const grupos = cuadro.grupos.filter(g => g.filas.length > 0);
 
   const isClosed = dia?.status === 'cerrado';

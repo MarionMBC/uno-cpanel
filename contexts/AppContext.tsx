@@ -10,7 +10,7 @@ import { INITIAL_PUMPS, PRICE_HISTORY, FUELS, DEFAULT_DIFERENCIAL_POR_LITRO } fr
 import { useAuth } from '@/contexts/AuthContext';
 import { diaOperativo } from '@/lib/fecha';
 import { idLectura } from '@/lib/totalizadores';
-import { ordenarPorVigencia, precioVigente, proximoPrecio, type Precios } from '@/lib/precios';
+import { ordenarPorVigencia, preciosDeLectura, preciosVigentesEn, precioVigente, proximoPrecio, type Precios } from '@/lib/precios';
 import { armarEntrada, ordenarAuditoria, type AuditInput } from '@/lib/auditoria';
 import { normalizarOperacion, OPERACION_DEFAULT } from '@/lib/turnos';
 
@@ -23,6 +23,8 @@ interface AppContextType {
   auditLog: AuditEntry[];
   /** Registra en auditoría. Quién (uid, nombre de la ficha, rol) y cuándo (`at` del servidor) los pone el contexto. */
   addAuditEntry: (entry: AuditInput) => Promise<void>;
+  /** Entrada de auditoría firmada por la sesión, para escribirla dentro de una transacción (at = hora del servidor). */
+  entradaAuditoria: (entry: AuditInput) => Record<string, unknown>;
   /** Historial ordenado por vigencia (más reciente primero). */
   priceHistory: FuelPrice[];
   addPriceEntry: (entry: FuelPrice) => Promise<void>;
@@ -34,6 +36,8 @@ interface AppContextType {
   precioProximo: FuelPrice | null;
   /** Precio por litro que rige en un instante (Lectura inicial lo toma al confirmar). */
   preciosEn: (instante: Date) => Precios;
+  /** Precios de respaldo para calcVenta: los vigentes cuando se abrió cada lectura vieja sin fuelPrice (TASK-023). */
+  preciosLectura: (r: { date?: string; createdAt?: string }) => Precios;
   /** Registra un precio que rige desde `vigenteDesde` (ISO). No toca lecturas ya abiertas. */
   setCurrentPrices: (p: Precios, vigenteDesde: string) => Promise<void>;
   readings: DailyReading[];
@@ -291,6 +295,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const e = armarEntrada(entry, { uid: appUser.uid, name: appUser.name, roleName: rolNombre }, new Date());
     await addDoc(collection(db, 'auditLog'), { ...e, at: serverTimestamp() });
   }, [appUser, rolNombre]);
+  const entradaAuditoria = useCallback((entry: AuditInput): Record<string, unknown> => {
+    if (!appUser?.uid) throw new Error('Sin sesión: no se puede registrar en auditoría.');
+    return { ...armarEntrada(entry, { uid: appUser.uid, name: appUser.name, roleName: rolNombre }, new Date()), at: serverTimestamp() };
+  }, [appUser, rolNombre]);
 
   const addPriceEntry = useCallback(async (entry: FuelPrice) => {
     const { id: _id, ...rest } = entry as FuelPrice & { id?: string };
@@ -303,10 +311,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => (precioActual ? { super: precioActual.super, regular: precioActual.regular, diesel: precioActual.diesel } : DEFAULT_PRICES),
     [precioActual],
   );
-  const preciosEn = useCallback((instante: Date): Precios => {
-    const p = precioVigente(priceHistory, instante.toISOString());
-    return p ? { super: p.super, regular: p.regular, diesel: p.diesel } : DEFAULT_PRICES;
-  }, [priceHistory]);
+  const preciosEn = useCallback((instante: Date): Precios => preciosVigentesEn(priceHistory, instante.toISOString()) ?? DEFAULT_PRICES, [priceHistory]);
+  const preciosLectura = useCallback((r: { date?: string; createdAt?: string }): Precios => preciosDeLectura(priceHistory, r) ?? currentPrices, [priceHistory, currentPrices]);
 
   const setCurrentPrices = useCallback(async (p: Precios, vigenteDesde: string) => {
     await addDoc(collection(db, 'prices'), {
@@ -360,9 +366,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       pumps, setPumps,
       dayStatus, setDayStatus,
       dayData, updateDayData,
-      auditLog, addAuditEntry,
+      auditLog, addAuditEntry, entradaAuditoria,
       priceHistory, addPriceEntry,
-      currentPrices, setCurrentPrices, precioActual, precioProximo, preciosEn,
+      currentPrices, setCurrentPrices, precioActual, precioProximo, preciosEn, preciosLectura,
       readings, saveReadings, createInitialReadings,
       users, roles, saveUser, saveRole,
       operacion,

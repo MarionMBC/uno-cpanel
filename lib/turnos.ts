@@ -1,7 +1,7 @@
 // Turnos y arqueo por bombero (TASK-019, auditoría TASK-004 §5 / B1–B8).
 // Todo detrás de settings/operacion.shiftsEnabled (default false). Lógica pura: se prueba con `npm test`.
 import type { AsignacionTurno, CashCount, CorteLectura, DailyReading, Operacion, PlantillaTurno, Shift, ShiftReading, TramoVenta } from '../types';
-import { calcVenta, round, rompeContinuidad, type LecturaVenta, type PreciosPorLitro, type Venta } from './totalizadores.ts';
+import { calcVenta, round, rompeContinuidad, type LecturaVenta, type PreciosPorLitro, type PreciosRespaldo, type Venta } from './totalizadores.ts';
 
 // ─── B1 configuración ─────────────────────────────────────────────────────────
 
@@ -164,14 +164,14 @@ export function preciosCambiados(delTurno: Record<string, number>, vigentes: Pre
 }
 
 /** Tramos de una lectura de turno: inicial → corte₁ → … → final, cada uno con su precio. */
-export function tramosLectura(sr: Pick<ShiftReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax' | 'cuts'>): LecturaVenta[] {
+export function tramosLectura(sr: Pick<ShiftReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax' | 'cuts'> & Partial<Pick<ShiftReading, 'date'>>): LecturaVenta[] {
   const cortes: CorteLectura[] = sr.cuts ?? [];
   const puntos = [sr.initialReading, ...cortes.map(c => c.reading)];
   const precios = [...cortes.map(c => c.fuelPrice), sr.fuelPrice];
   return puntos.map((ini, i) => {
     const fin = i < cortes.length ? cortes[i].reading : sr.finalReading;
     return {
-      fuelId: sr.fuelId, fuelPrice: precios[i], initialReading: ini, finalReading: fin, status: sr.status,
+      fuelId: sr.fuelId, fuelPrice: precios[i], initialReading: ini, finalReading: fin, status: sr.status, date: sr.date,
       // La vuelta a cero cae en el tramo donde el fin es menor al inicio.
       rollover: sr.rollover === true && fin !== undefined && fin < ini, meterMax: sr.meterMax,
     };
@@ -186,7 +186,7 @@ export interface VentaTurno {
 }
 
 /** Venta de una lectura de turno: suma de calcVenta por tramo (cada tramo a su precio). */
-export function calcVentaTurno(sr: Parameters<typeof tramosLectura>[0], precios: PreciosPorLitro): VentaTurno {
+export function calcVentaTurno(sr: Parameters<typeof tramosLectura>[0], precios: PreciosRespaldo): VentaTurno {
   const tramos = tramosLectura(sr).map(t => calcVenta(t, precios));
   const mal = tramos.find(t => t.estado !== 'ok');
   if (mal) return { estado: mal.estado, litros: 0, total: 0, tramos };
@@ -207,6 +207,95 @@ export function tramosDiarios(previos: TramoVenta[] | undefined, shiftId: string
   return [...otros, ...venta.tramos.filter(t => t.estado === 'ok').map(t => ({ litros: t.litros, precio: t.precio, shiftId }))];
 }
 
+// ─── TASK-022 corrección de una final con el turno cerrado ───────────────────
+
+export interface Posteriores {
+  /** Próxima lectura de esa manguera en un turno abierto después (cualquier día), con el nombre del turno. */
+  siguiente: { shiftId: string; nombre: string; lectura: ShiftReading } | null;
+  /** Algún turno posterior del mismo día ya cerró esa manguera (la final del día es la suya, no la de este turno). */
+  cierrePosteriorDelDia: boolean;
+}
+
+/**
+ * Lecturas de la misma manguera en turnos posteriores (por apertura), aunque el turno inmediato no la tenga
+ * (manguera en mantenimiento o inactiva en ese turno): la continuidad se juzga contra la próxima que la abrió.
+ */
+export function posterioresDeManguera(
+  turno: Pick<Shift, 'id' | 'date' | 'openedAt'>, dispenserId: string,
+  shifts: Pick<Shift, 'id' | 'date' | 'name' | 'openedAt'>[], lecturas: ShiftReading[],
+): Posteriores {
+  const despues = shifts.filter(s => s.id !== turno.id && s.openedAt > turno.openedAt).sort((a, b) => a.openedAt.localeCompare(b.openedAt));
+  const de = (s: Pick<Shift, 'id'>) => lecturas.find(r => r.shiftId === s.id && r.dispenserId === dispenserId);
+  const prox = despues.find(s => de(s));
+  return {
+    siguiente: prox ? { shiftId: prox.id as string, nombre: prox.name, lectura: de(prox) as ShiftReading } : null,
+    cierrePosteriorDelDia: despues.some(s => s.date === turno.date && de(s)?.finalReading !== undefined && de(s)?.finalReading !== null),
+  };
+}
+
+export type PlanCorreccion =
+  | { ok: false; error: string }
+  | {
+    ok: true; venta: VentaTurno; diaria: { tramos: TramoVenta[]; finalReading?: number; rollover: boolean } | null;
+    /** La corrección iguala la final a la inicial del siguiente que había marcado la diferencia: la ruptura se cierra. */
+    cierraRuptura: boolean;
+    /** Queda diferencia de continuidad con el siguiente (aviso, no bloqueo). */
+    avisoContinuidad: string | null;
+  };
+
+/**
+ * Valida y arma la corrección de la final de una manguera en un turno cerrado.
+ * - La nueva final debe dar venta válida (≥ inicial o último corte, o vuelta a cero).
+ * - Continuidad: si la próxima lectura de la manguera arrancó encadenada con la final vieja (inicial = vieja),
+ *   se bloquea: corregir solo este turno haría que la venta del día deje de cuadrar con el totalizador.
+ *   Si esa lectura ya había marcado la diferencia, la corrección puede cerrarla (o queda aviso si no la iguala).
+ * - La diaria reemplaza los tramos de este turno; su final se mueve solo si ningún turno posterior del día
+ *   cerró la manguera (este turno fue su último cierre).
+ * - Si la diaria cuadraba y con la corrección deja de cuadrar, se bloquea.
+ */
+export function planCorreccion(p: {
+  sr: Parameters<typeof tramosLectura>[0] & Pick<ShiftReading, 'shiftId'>;
+  nuevaFinal: number; rollover: boolean;
+  diaria: (LecturaVenta & Pick<DailyReading, 'initialReading'>) | null;
+  siguiente: { nombre: string; initialReading: number } | null;
+  cierrePosteriorDelDia: boolean;
+  precios: PreciosPorLitro;
+}): PlanCorreccion {
+  const vieja = p.sr.finalReading;
+  if (vieja === undefined || vieja === null) return { ok: false, error: 'Esta manguera aún no tiene final en el turno.' };
+  if (!Number.isFinite(p.nuevaFinal) || p.nuevaFinal < 0) return { ok: false, error: 'La nueva final debe ser un número mayor o igual a cero.' };
+  if (round(p.nuevaFinal, 3) === round(vieja, 3) && p.rollover === (p.sr.rollover === true)) return { ok: false, error: 'La nueva final es igual a la guardada.' };
+  const venta = calcVentaTurno({ ...p.sr, finalReading: p.nuevaFinal, rollover: p.rollover }, p.precios);
+  if (venta.estado !== 'ok') {
+    return { ok: false, error: venta.tramos.some(t => t.motivo === 'tope') ? 'La nueva final da más litros de los posibles en un día. Revísala.' : 'La nueva final queda menor a la inicial o al último corte. Revísala o marca vuelta a cero.' };
+  }
+  let cierraRuptura = false, avisoContinuidad: string | null = null;
+  if (p.siguiente) {
+    const ini = round(p.siguiente.initialReading, 3);
+    if (ini === round(vieja, 3)) {
+      return { ok: false, error: `El turno ${p.siguiente.nombre} ya abrió esta manguera con inicial ${vieja} (la final que quieres corregir). Corregir solo este turno descuadraría la venta del día contra el totalizador; la venta total del día ya es correcta.` };
+    }
+    if (ini === round(p.nuevaFinal, 3)) cierraRuptura = true;
+    else avisoContinuidad = `El turno ${p.siguiente.nombre} abrió esta manguera en ${p.siguiente.initialReading}: con ${p.nuevaFinal} sigue habiendo diferencia de continuidad.`;
+  }
+  if (!p.diaria) return { ok: true, venta, diaria: null, cierraRuptura, avisoContinuidad };
+  const tramos = tramosDiarios(p.diaria.tramos, p.sr.shiftId, venta);
+  const esUltimo = !p.cierrePosteriorDelDia;
+  const finalReading = esUltimo ? p.nuevaFinal : p.diaria.finalReading;
+  // La diaria cubre menos de una vuelta del totalizador: dio la vuelta si la final quedó bajo la inicial.
+  const rollover = esUltimo ? (finalReading as number) < p.diaria.initialReading : p.diaria.rollover === true;
+  const nueva = { ...p.diaria, tramos, finalReading, rollover };
+  if (calcVenta(p.diaria, p.precios).estado === 'ok' && calcVenta(nueva, p.precios).estado !== 'ok') {
+    return { ok: false, error: 'Con esta corrección la venta del día deja de cuadrar con el totalizador. Revisa la final.' };
+  }
+  return { ok: true, venta, diaria: { tramos, finalReading, rollover }, cierraRuptura, avisoContinuidad };
+}
+
+/** Arqueo con el esperado recalculado (lo declarado no cambia). */
+export function recalcularArqueo(c: Pick<CashCount, 'cashFund' | 'cash' | 'card' | 'credits' | 'partialDrops'>, expectedSales: number): Pick<CashCount, 'expectedSales' | 'expected' | 'declared' | 'difference' | 'status'> {
+  return { expectedSales: round(expectedSales, 2), ...calcArqueo(expectedSales, c.cashFund, c) };
+}
+
 export interface VentaBombero {
   email: string;
   name: string;
@@ -217,7 +306,7 @@ export interface VentaBombero {
 }
 
 /** Ventas por bombero en un turno (sus mangueras). */
-export function ventasPorBombero(shift: Pick<Shift, 'assignments'>, lecturas: ShiftReading[], precios: PreciosPorLitro): VentaBombero[] {
+export function ventasPorBombero(shift: Pick<Shift, 'assignments'>, lecturas: ShiftReading[], precios: PreciosRespaldo): VentaBombero[] {
   return shift.assignments.map(a => {
     let litros = 0, total = 0, pendientes = 0;
     lecturas.filter(r => a.dispenserIds.includes(r.dispenserId)).forEach(r => {
@@ -281,7 +370,7 @@ const etiquetaManguera = (r: Pick<ShiftReading, 'pumpName' | 'face' | 'dispenser
   `${r.pumpName} ${r.face}-${(r.dispenserName.match(/(\d+)\s*$/) || ['', r.dispenserName])[1]} ${r.fuelName}`;
 
 /** Hoja por turno: lecturas por manguera (con tramos) y arqueo por bombero. */
-export function turnoAoa(t: TurnoConDatos, precios: PreciosPorLitro): (string | number)[][] {
+export function turnoAoa(t: TurnoConDatos, precios: PreciosRespaldo): (string | number)[][] {
   const { shift: s } = t;
   const aoa: (string | number)[][] = [
     [`${s.date} · ${s.name}`, s.status === 'cerrado' ? 'CERRADO' : 'ABIERTO', `Abrió: ${s.openedByName}`, s.closedByName ? `Cerró: ${s.closedByName}` : '', '', '', ''],
@@ -320,7 +409,7 @@ export function turnoAoa(t: TurnoConDatos, precios: PreciosPorLitro): (string | 
 }
 
 /** Hoja consolidada del día: una fila por turno y bombero, más el total. */
-export function consolidadoAoa(fecha: string, turnos: TurnoConDatos[], precios: PreciosPorLitro): (string | number)[][] {
+export function consolidadoAoa(fecha: string, turnos: TurnoConDatos[], precios: PreciosRespaldo): (string | number)[][] {
   const aoa: (string | number)[][] = [[`Resumen por turno y bombero · ${fecha}`, '', '', '', '', '', ''], ['TURNO', 'BOMBERO', 'LITROS', 'VENTAS', 'CAMBIO', 'DECLARADO', 'DIFERENCIA']];
   let litros = 0, ventas = 0, dif = 0;
   turnos.forEach(t => {

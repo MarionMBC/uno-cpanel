@@ -123,9 +123,11 @@ export interface DayStatus {
   date: string;
   status: 'pendiente' | 'en_proceso' | 'cerrado';
   closedBy?: string;
-  closedAt?: string;
+  /** Hora del servidor (Timestamp al leer) desde TASK-023; días anteriores, ISO. Solo se muestra/compara su presencia. */
+  closedAt?: unknown;
   reopenedBy?: string;
-  reopenedAt?: string;
+  /** Hora del servidor (Timestamp al leer) desde TASK-023; antes, ISO. */
+  reopenedAt?: unknown;
   reopenReason?: string;
   horometerInitial?: number;
   horometerFinal?: number;
@@ -308,6 +310,10 @@ export interface ShiftReading {
   continuityBreak?: boolean;
   continuityReason?: string;
   cuts?: CorteLectura[];
+  /** Corrección de la final con el turno cerrado (TASK-022): quién, cuándo y motivo (antes/después en la auditoría). */
+  correctedBy?: string;
+  correctedAt?: string;
+  correctionReason?: string;
 }
 
 /** cashCounts/{shiftId}_{bomberoEmail} */
@@ -337,4 +343,7 @@ export interface CashCount {
   /** Recibido/validado por quien puede cerrar el día: el turno queda arqueado. */
   receivedBy?: string;
   receivedAt?: string;
+  /** Esperado recalculado por una corrección de final (TASK-022); si estaba recibido, hay que volver a recibirlo. */
+  recalculatedBy?: string;
+  recalculatedAt?: string;
 }
