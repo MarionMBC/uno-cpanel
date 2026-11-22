@@ -1,6 +1,6 @@
 // Turnos y arqueo por bombero (TASK-019, auditoría TASK-004 §5 / B1–B8).
 // Todo detrás de settings/operacion.shiftsEnabled (default false). Lógica pura: se prueba con `npm test`.
-import type { AsignacionTurno, CashCount, CorteLectura, DailyReading, Operacion, PlantillaTurno, Shift, ShiftReading } from '../types';
+import type { AsignacionTurno, CashCount, CorteLectura, DailyReading, Operacion, PlantillaTurno, Shift, ShiftReading, TramoVenta } from '../types';
 import { calcVenta, round, rompeContinuidad, type LecturaVenta, type PreciosPorLitro, type Venta } from './totalizadores.ts';
 
 // ─── B1 configuración ─────────────────────────────────────────────────────────
@@ -101,7 +101,8 @@ export const idArqueo = (shiftId: string, email: string) => `${shiftId}_${email.
 
 // ─── B3 asignaciones ─────────────────────────────────────────────────────────
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Allowlist: el correo forma parte del id del arqueo (sin '/', espacios ni caracteres raros).
+const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 
 /** Cada manguera del turno con exactamente un bombero; cada bombero con correo válido y al menos una manguera. */
 export function validarAsignaciones(dispenserIds: string[], asignaciones: AsignacionTurno[]): string[] {
@@ -195,6 +196,15 @@ export function calcVentaTurno(sr: Parameters<typeof tramosLectura>[0], precios:
     total: round(tramos.reduce((s, t) => s + t.total, 0), 2),
     tramos,
   };
+}
+
+/**
+ * Tramos de la lectura diaria tras cerrar un turno: los de otros turnos se conservan y los de este turno
+ * se reemplazan (idempotente). Así la venta diaria (calcVenta) = Σ ventas de los turnos.
+ */
+export function tramosDiarios(previos: TramoVenta[] | undefined, shiftId: string, venta: VentaTurno): TramoVenta[] {
+  const otros = (previos ?? []).filter(t => t.shiftId !== shiftId);
+  return [...otros, ...venta.tramos.filter(t => t.estado === 'ok').map(t => ({ litros: t.litros, precio: t.precio, shiftId }))];
 }
 
 export interface VentaBombero {

@@ -65,6 +65,18 @@ export interface DailyReading {
   previousFinal?: number;
   /** Motivo de la diferencia de continuidad. */
   continuityReason?: string;
+  /**
+   * Con turnos (TASK-019): tramos vendidos en el día (uno por tramo de cada turno cerrado, a su precio).
+   * Si existen, la venta del día es su suma y no final − inicial × fuelPrice.
+   */
+  tramos?: TramoVenta[];
+}
+
+/** Litros vendidos a un precio (tramo de un turno). */
+export interface TramoVenta {
+  litros: number;
+  precio: number;
+  shiftId?: string;
 }
 
 export interface FuelReceipt {
