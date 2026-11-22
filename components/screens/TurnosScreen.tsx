@@ -21,7 +21,7 @@ import {
   bloqueoCierreDia, calcArqueo, calcVentaTurno, consolidadoAoa, fechaDeTurno, idTurno, inicialEncadenada, InicialSugerida,
   plantillaVigente, preciosCambiados, rompeCadena, turnoAoa, validarArqueo, validarAsignaciones, ventasPorBombero,
 } from '@/lib/turnos';
-import { abrirTurno, AperturaManguera, cerrarTurno, corregirFinalTurno, cortarPrecio, guardarArqueo, refEstado } from '@/lib/turnosDb';
+import { abrirTurno, AperturaManguera, cerrarTurno, corregirFinalTurno, cortarPrecio, guardarArqueo, lecturaTurnoDe, refEstado } from '@/lib/turnosDb';
 import { fmtL, fmtNum } from '@/lib/utils';
 
 const fechaHN = (iso: string) => iso.split('-').reverse().join('/');
@@ -74,7 +74,7 @@ export default function TurnosScreen() {
       parcial.shifts = s.docs.map(d => ({ id: d.id, ...d.data() } as Shift)).sort((a, b) => a.openedAt.localeCompare(b.openedAt)); publicar();
     }, err);
     const u2 = onSnapshot(query(collection(db, 'shiftReadings'), where('date', '==', fecha)), s => {
-      parcial.lecturas = s.docs.map(d => ({ id: d.id, ...d.data() } as ShiftReading)); publicar();
+      parcial.lecturas = s.docs.map(d => lecturaTurnoDe(d.id, d.data())); publicar();
     }, err);
     const u3 = onSnapshot(query(collection(db, 'cashCounts'), where('date', '==', fecha)), s => {
       parcial.arqueos = s.docs.map(d => ({ id: d.id, ...d.data() } as CashCount)); publicar();
@@ -240,10 +240,15 @@ export default function TurnosScreen() {
     try {
       const res = await corregirFinalTurno({ shiftId: sel.id as string, dispenserId: r.dispenserId, finalReading: n, rollover: corr.rollover, motivo: corr.motivo, precios, autor });
       setCorr(null);
-      const arq = res.arqueo === 'recepcion_anulada' ? ' El arqueo del bombero se recalculó: vuelve a recibirlo.' : res.arqueo === 'recalculado' ? ' El arqueo del bombero se recalculó.' : '';
-      toast.success('Final corregida', `${etiqueta(r)}: ${res.antes} → ${n}.${arq}`);
+      const arq = res.arqueo?.recepcionAnulada ? ' El arqueo del bombero se recalculó: vuelve a recibirlo.' : res.arqueo ? ' El arqueo del bombero se recalculó.' : '';
+      toast.success('Final corregida', `${etiqueta(r)}: ${res.antes} → ${n}.${arq}${res.cierraRuptura ? ' La diferencia de continuidad con el turno siguiente quedó cerrada.' : ''}`);
+      if (res.avisoContinuidad) toast.warning('Continuidad pendiente', res.avisoContinuidad);
+      const rollTxt = res.rolloverAntes !== corr.rollover ? ` · vuelta a cero ${res.rolloverAntes ? 'sí' : 'no'} → ${corr.rollover ? 'sí' : 'no'}` : corr.rollover ? ' · con vuelta a cero' : '';
+      const diariaTxt = res.finalDiaria ? ` · final del día ${res.finalDiaria.antes ?? '—'} → ${res.finalDiaria.despues}` : '';
+      const arqTxt = res.arqueo ? ` · arqueo esperado ${fmtL(res.arqueo.antes.expected)} → ${fmtL(res.arqueo.despues.expected)}, diferencia ${fmtL(res.arqueo.antes.difference)} → ${fmtL(res.arqueo.despues.difference)}${res.arqueo.recepcionAnulada ? ', recepción anulada' : ''}` : '';
+      const contTxt = res.cierraRuptura ? ' · continuidad con el turno siguiente cerrada' : res.avisoContinuidad ? ` · ${res.avisoContinuidad}` : '';
       await auditar('Corrección de final de turno', `${etiqueta(r)} ${r.fuelName} · ${sel.name} ${fechaHN(sel.date)}`,
-        `Turno cerrado${corr.rollover ? ' · vuelta a cero' : ''}${res.finalDiaria ? ' · también la final del día' : ''}${res.arqueo === 'recepcion_anulada' ? ' · arqueo recalculado, recepción anulada' : res.arqueo ? ' · arqueo recalculado' : ''}`,
+        `Turno cerrado${rollTxt}${diariaTxt}${arqTxt}${contTxt}`,
         { before: res.antes, after: n, reason: corr.motivo.trim(), icon: 'edit' });
     } catch (e) {
       console.error(e);
@@ -656,7 +661,7 @@ export default function TurnosScreen() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 4, fontSize: 13 }}>
                 <span>Inicial{corr.r.cuts?.length ? ` (último corte ${fmtNum(corr.r.cuts[corr.r.cuts.length - 1].reading, 3)})` : ''}</span><b style={mono}>{fmtNum(corr.r.initialReading, 3)}</b>
-                <span>Final guardada</span><b style={mono}>{fmtNum(corr.r.finalReading ?? 0, 3)}</b>
+                <span>Final guardada</span><b style={mono}>{fmtNum(corr.r.finalReading ?? 0, 3)}{corr.r.rollover ? ' (vuelta a cero)' : ''}</b>
                 <span>Bombero</span><b>{corr.r.attendantName}</b>
               </div>
               <TextField label="Nueva final" value={corr.valor} autoFocus onChange={val => setCorr({ ...corr, valor: val })} />

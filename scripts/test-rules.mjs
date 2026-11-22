@@ -47,6 +47,20 @@ async function commit(tk, writes) {
   });
   return r.status;
 }
+// Escritura parcial (updateMask) con campos de hora del servidor (serverTimestamp → request.time).
+async function opTs(tk, path, data, tsFields = []) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (tk) headers.Authorization = `Bearer ${tk}`;
+  const r = await fetch(`${FS}:commit`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ writes: [{
+      update: { name: `${DOCS}/${path}`, fields: JSON.parse(body(data)).fields },
+      updateMask: { fieldPaths: Object.keys(data) },
+      updateTransforms: tsFields.map(f => ({ fieldPath: f, setToServerValue: 'REQUEST_TIME' })),
+    }] }),
+  });
+  return r.status;
+}
 // Escritura de preparación con la credencial de administrador del emulador (ignora reglas).
 const owner = (method, path, data) => fetch(`${FS}/${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' }, body: data ? body(data) : undefined });
 
@@ -204,16 +218,32 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   caso('operador cierra turno (turno + puntero en una transacción)', await cerrarT(operador, sid, turnoDoc), true);
   caso('operador modifica turno cerrado', await op(operador, 'PATCH', `shifts/${sid}`, { ...turnoDoc, status: 'abierto' }), false);
   caso('operador cambia final con turno cerrado', await op(operador, 'PATCH', lr, { shiftId: sid, dispenserId: 'p1-A-1', date: fT, initialReading: 100, finalReading: 160 }), false);
-  // TASK-022: corrección de la final con el turno cerrado (canCloseDay, motivo, firma propia, solo esos campos).
-  const corrT = (extra = {}) => ({ finalReading: 160, correctedBy: 'operador@uno.local', correctedAt: '2099-01-01T12:00:00.000Z', correctionReason: 'final mal digitada', ...extra });
-  caso('consulta (sin canCloseDay) corrige final de turno cerrado', await op(consulta, 'PATCH', lr, corrT({ correctedBy: 'consulta@uno.local' })), false);
-  caso('operador corrige final de turno cerrado sin motivo', await op(operador, 'PATCH', lr, { finalReading: 160, correctedBy: 'operador@uno.local', correctedAt: '2099-01-01T12:00:00.000Z' }), false);
-  caso('operador corrige final de turno cerrado con motivo corto', await op(operador, 'PATCH', lr, corrT({ correctionReason: 'x' })), false);
-  caso('operador corrige final de turno cerrado firmando como otro', await op(operador, 'PATCH', lr, corrT({ correctedBy: 'admin@uno.local' })), false);
-  caso('operador corrige final y además la inicial', await op(operador, 'PATCH', lr, corrT({ initialReading: 90 })), false);
-  caso('operador corrige final y además el precio', await op(operador, 'PATCH', lr, corrT({ fuelPrice: 1 })), false);
-  caso('operador corrige final con rollover no booleano', await op(operador, 'PATCH', lr, corrT({ rollover: 'si' })), false);
-  caso('operador corrige final de turno cerrado con motivo', await op(operador, 'PATCH', lr, corrT({ rollover: false })), true);
+  // TASK-022: corrección de la final con el turno cerrado (canCloseDay, motivo, firma propia, hora del servidor, solo esos campos).
+  const corrT = (extra = {}) => ({ finalReading: 160, correctedBy: 'operador@uno.local', correctionReason: 'final mal digitada', ...extra });
+  const corregir = (tk, extra = {}, ts = ['correctedAt']) => opTs(tk, lr, corrT(extra), ts);
+  caso('consulta (sin canCloseDay) corrige final de turno cerrado', await corregir(consulta, { correctedBy: 'consulta@uno.local' }), false);
+  caso('operador corrige final de turno cerrado sin motivo', await opTs(operador, lr, { finalReading: 160, correctedBy: 'operador@uno.local' }, ['correctedAt']), false);
+  caso('operador corrige final de turno cerrado con motivo corto', await corregir(operador, { correctionReason: 'x' }), false);
+  caso('operador corrige final de turno cerrado firmando como otro', await corregir(operador, { correctedBy: 'admin@uno.local' }), false);
+  caso('operador corrige final con correctedAt inventado (no hora del servidor)', await corregir(operador, { correctedAt: '2099-01-01T12:00:00.000Z' }, []), false);
+  caso('operador corrige final y además la inicial', await corregir(operador, { initialReading: 90 }), false);
+  caso('operador corrige final y además el precio', await corregir(operador, { fuelPrice: 1 }), false);
+  caso('operador corrige final con rollover no booleano', await corregir(operador, { rollover: 'si' }), false);
+  caso('operador corrige final de turno cerrado con motivo', await corregir(operador, { rollover: false }), true);
+  caso('admin vuelve a corregir con su propia firma', await corregir(admin, { finalReading: 158, correctedBy: 'admin@uno.local' }), true);
+  caso('admin vuelve a corregir firmando como el primero', await corregir(admin, { finalReading: 157 }), false);
+  { // manguera de turno cerrado sin final guardada: no hay final que corregir
+    const lrSin = `shiftReadings/${sid}_p1-A-2`;
+    await owner('PATCH', lrSin, { shiftId: sid, dispenserId: 'p1-A-2', date: fT, initialReading: 100 });
+    caso('operador "corrige" final en lectura de turno cerrado sin final', await opTs(operador, lrSin, corrT(), ['correctedAt']), false);
+    // Lectura de un turno posterior que marcó diferencia de continuidad: la corrección la resuelve.
+    const lrBrk = `shiftReadings/${sid}_p1-A-3`;
+    await owner('PATCH', lrBrk, { shiftId: sid, dispenserId: 'p1-A-3', date: fT, initialReading: 160, previousFinal: 150, continuityBreak: true, continuityReason: 'totalizador real' });
+    caso('consulta resuelve ruptura de continuidad', await opTs(consulta, lrBrk, { continuityBreak: false, previousFinal: 160 }), false);
+    caso('operador "resuelve" ruptura con previousFinal distinto a la inicial', await opTs(operador, lrBrk, { continuityBreak: false, previousFinal: 155 }), false);
+    caso('operador resuelve ruptura y además cambia el motivo', await opTs(operador, lrBrk, { continuityBreak: false, previousFinal: 160, continuityReason: 'x' }), false);
+    caso('operador resuelve ruptura (previousFinal = inicial)', await opTs(operador, lrBrk, { continuityBreak: false, previousFinal: 160 }), true);
+  }
   caso('encargado recibe arqueo', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { receivedBy: 'operador@uno.local' })), true);
   caso('bombero cambia arqueo ya recibido', await op(consulta, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 1 })), false);
   caso('bombero (operador2) declara su arqueo', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local')), true);
@@ -226,7 +256,7 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
   caso('encargado corrige arqueo recibido con el día cerrado', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, receivedBy: 'operador@uno.local' })), false);
   caso('encargado recibe arqueo con el día cerrado', await op(operador, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local', { receivedBy: 'operador@uno.local' })), false);
   caso('bombero declara arqueo con el día cerrado', await op(operador2, 'PATCH', `cashCounts/${sid}_operador2@uno.local`, arq('operador2@uno.local', { cash: 5 })), false);
-  caso('operador corrige final de turno cerrado con el día cerrado', await op(operador, 'PATCH', lr, corrT({ finalReading: 170 })), false);
+  caso('operador corrige final de turno cerrado con el día cerrado', await corregir(operador, { finalReading: 170 }), false);
   // Turno abierto colado en un día cerrado (datos previos a esta regla): sus lecturas no se crean ni cambian.
   const sid3 = `${fT}_${tpl}C`;
   await owner('PATCH', `shifts/${sid3}`, { ...turnoDoc, templateId: `${tpl}C` });
@@ -238,7 +268,7 @@ caso('día con id mal formado', await op(operador, 'PATCH', `dayStatus/2026-11-0
     [`shiftReadings/${sid2}_p1-A-1`, { shiftId: sid2, dispenserId: 'p1-A-1', date: fT, initialReading: 150 }],
     [`readings/${fT}_p1-A-9${run % 1000}`, { date: fT, dispenserId: `p1-A-9${run % 1000}`, initialReading: 150, fuelPrice: 34.05, status: 'activo' }],
   ]), true);
-  caso('operador corrige final de turno cerrado con el día reabierto', await op(operador, 'PATCH', lr, corrT({ finalReading: 170 })), true);
+  caso('operador corrige final de turno cerrado con el día reabierto', await corregir(operador, { finalReading: 170 }), true);
   caso('encargado corrige arqueo recibido con el día reabierto', await op(operador, 'PATCH', `cashCounts/${sid}_consulta@uno.local`, arq('consulta@uno.local', { cash: 90, receivedBy: 'operador@uno.local' })), true);
   caso('consulta escribe puntero de turno', await op(consulta, 'PATCH', 'shiftState/actual', { openShiftId: null, lastShiftId: sid2 }), false);
   caso('operador escribe puntero con otro id', await op(operador, 'PATCH', 'shiftState/otro', { testPing: run }), false);
