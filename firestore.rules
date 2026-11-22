@@ -76,6 +76,11 @@ service cloud.firestore {
         && (!('finalReading' in request.resource.data) || request.resource.data.finalReading is number);
     }
 
+    function finalIntacta() {
+      return request.resource.data.get('finalReading', null) == resource.data.finalReading
+        && request.resource.data.get('rollover', false) == resource.data.get('rollover', false);
+    }
+
     // Lecturas de totalizadores: cualquier usuario activo registra mientras el día esté abierto;
     // con el día cerrado solo corrige quien puede cerrar el día. No se borran.
     match /readings/{readingId} {
@@ -83,9 +88,11 @@ service cloud.firestore {
       allow create: if activo() && lecturaValida()
         && (!diaCerrado(request.resource.data.date) || permiso('canCloseDay'));
       // Cambiar la lectura inicial ya registrada es una corrección: exige canCloseDay.
+      // Igual cambiar (o borrar) una final ya guardada, o su vuelta a cero: es corrección con motivo.
       allow update: if activo() && lecturaValida()
         && request.resource.data.date == resource.data.date
         && (request.resource.data.initialReading == resource.data.initialReading || permiso('canCloseDay'))
+        && (!('finalReading' in resource.data) || finalIntacta() || permiso('canCloseDay'))
         && (!diaCerrado(resource.data.date) || permiso('canCloseDay'));
       allow delete: if false;
     }

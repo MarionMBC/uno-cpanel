@@ -16,17 +16,21 @@ import { fmtL, fmtNum } from '@/lib/utils';
 import { LITERS_PER_GALLON } from '@/lib/constants';
 import { AuditEntry, DailyReading } from '@/types';
 import * as XLSX from 'xlsx';
-import { calcVenta, lecturasPorDispensador, litrosEntre, METER_MAX_DEFAULT, round, Venta } from '@/lib/totalizadores';
+import {
+  calcVenta, excedeTope, FilaFinal, filasLecturaFinal, lecturasPorDispensador, litrosEntre, LITROS_MAX_DIA, METER_RESOLUCION, rompeContinuidad, round, sumarVentas, Venta,
+} from '@/lib/totalizadores';
 
 const MOTIVO_MIN = 5;
 const fechaHN = (iso: string) => iso.split('-').reverse().join('/');
 
-interface Fila {
-  id: string; name: string; pumpName: string; face: string;
-  fuel: string; fuelName: string; fuelColor: string; meterMax: number;
-}
+type Fila = FilaFinal;
 
-interface Correccion { reading: DailyReading; fila: Fila; campo: 'inicial' | 'final'; valor: string; motivo: string }
+/** La lectura se toma del contexto al confirmar (no una copia del momento de abrir el modal). */
+interface Correccion { fila: Fila; campo: 'inicial' | 'final'; valor: string; motivo: string; rollover: boolean }
+
+const msgInvalida = (v: Venta | null) => v?.motivo === 'tope'
+  ? `Más de ${fmtNum(LITROS_MAX_DIA, 0)} L en una manguera en un día: revisa la lectura.`
+  : 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.';
 
 export default function LecturaFinalScreen() {
   const { pumps, dayStatus, updateDayData, addAuditEntry, readings, saveReadings, currentPrices, roles, today } = useApp();
@@ -44,18 +48,19 @@ export default function LecturaFinalScreen() {
   const role = roles.find(r => r.id === appUser?.roleId);
   const puedeCerrar = role?.permissions?.canCloseDay === true;
 
-  // Operables: bomba activa y dispensador no inactivo (mismo criterio que Lectura inicial y el Cuadro).
-  const rows: Fila[] = useMemo(() => pumps
-    .filter(p => p.isActive)
-    .flatMap(p => p.faces.flatMap(f => f.dispensers.filter(d => d.status !== 'inactivo').map(d => ({
-      id: d.id, name: d.name, pumpName: p.name, face: f.id,
-      fuel: d.fuel, fuelName: d.fuelName, fuelColor: d.fuelColor, meterMax: d.meterMax ?? METER_MAX_DEFAULT,
-    })))), [pumps]);
+  // Operables + dispensadores con lectura de hoy aunque cambió la configuración (mismo criterio que el Cuadro).
+  const rows: Fila[] = useMemo(() => filasLecturaFinal(pumps, readings), [pumps, readings]);
 
   const lecturaDe = useMemo(() => lecturasPorDispensador(readings), [readings]);
 
-  const finalTxt = (id: string) => edits[id] ?? (lecturaDe.get(id)?.finalReading?.toString() ?? '');
-  const rolloverDe = (id: string) => rollEdits[id] ?? lecturaDe.get(id)?.rollover === true;
+  // Una final guardada solo cambia por "Corregir" (con motivo): lo guardado manda sobre lo digitado.
+  const finalGuardada = (id: string) => lecturaDe.get(id)?.finalReading !== undefined;
+  const finalTxt = (id: string) => finalGuardada(id)
+    ? String(lecturaDe.get(id)?.finalReading)
+    : edits[id] ?? '';
+  const rolloverDe = (id: string) => finalGuardada(id)
+    ? lecturaDe.get(id)?.rollover === true
+    : rollEdits[id] ?? lecturaDe.get(id)?.rollover === true;
 
   /** Lectura con lo digitado aplicado (final, rollover y meterMax). */
   const lecturaEditada = (f: Fila): DailyReading | null => {
@@ -72,13 +77,8 @@ export default function LecturaFinalScreen() {
     return r ? calcVenta(r, currentPrices) : null;
   };
 
-  const totals = rows.reduce((s, f) => {
-    const v = ventaDe(f);
-    if (v?.estado === 'ok') { s.l += v.litros; s.m += v.total; }
-    return s;
-  }, { l: 0, m: 0 });
-  totals.l = round(totals.l, 3);
-  totals.m = round(totals.m, 2);
+  const venta = sumarVentas(rows.map(lecturaEditada).filter((r): r is DailyReading => !!r), currentPrices);
+  const totals = { l: venta.litros, m: venta.total };
   const totalGal = totals.l / LITERS_PER_GALLON;
 
   const isClosed = dayStatus === 'cerrado';
@@ -125,6 +125,11 @@ export default function LecturaFinalScreen() {
       toast.error('Valores inválidos', 'Revisa que todas las lecturas sean números válidos y mayores o iguales a cero.');
       return null;
     }
+    const fueraDeTope = conValor.filter(f => ventaDe(f)?.motivo === 'tope');
+    if (fueraDeTope.length > 0) {
+      toast.error('Lecturas no plausibles', `${fueraDeTope.map(etiqueta).join(', ')}: más de ${fmtNum(LITROS_MAX_DIA, 0)} L en un día. Revisa la lectura final.`);
+      return null;
+    }
     const menores = conValor.filter(f => ventaDe(f)?.estado === 'invalida');
     if (menores.length > 0) {
       toast.error('Lecturas incorrectas', `Hay ${menores.length} lectura${menores.length > 1 ? 's' : ''} final${menores.length > 1 ? 'es' : ''} menor${menores.length > 1 ? 'es' : ''} a la inicial. Si el totalizador pasó por cero, márcalo como "Vuelta a cero".`);
@@ -134,10 +139,10 @@ export default function LecturaFinalScreen() {
     const out: DailyReading[] = [];
     conValor.forEach(f => {
       const r = lecturaDe.get(f.id) as DailyReading;
+      // Ya guardada: no se pisa (cambiarla es una corrección con motivo).
+      if (r.finalReading !== undefined) return;
       const e = lecturaEditada(f) as DailyReading;
       const v = calcVenta(e, currentPrices);
-      const cambio = r.finalReading !== e.finalReading || (r.rollover === true) !== (e.rollover === true);
-      if (!cambio) return;
       out.push({
         ...r,
         finalReading: e.finalReading,
@@ -153,11 +158,16 @@ export default function LecturaFinalScreen() {
     return out;
   };
 
-  const registrarFinales = async (finales: DailyReading[]) => {
+  const guardarFinales = async (finales: DailyReading[]) => {
     if (finales.length === 0) return;
     await saveReadings(finales);
     setEdits(s => { const n = { ...s }; finales.forEach(r => delete n[r.dispenserId]); return n; });
     setRollEdits(s => { const n = { ...s }; finales.forEach(r => delete n[r.dispenserId]); return n; });
+  };
+
+  /** Auditoría aparte: si falla, lo guardado sigue guardado (se avisa, no se dice "No se guardó"). */
+  const auditarFinales = async (finales: DailyReading[]) => {
+    if (finales.length === 0) return;
     const base = auditBase();
     await addAuditEntry({
       ...base,
@@ -171,7 +181,7 @@ export default function LecturaFinalScreen() {
         ...base,
         action: 'Vuelta a cero del totalizador',
         target: `${r.pumpName} ${r.face}-${r.dispenserName.slice(-1)} (${r.fuelName})`,
-        detail: `Litros = final + máximo (${r.meterMax}) − inicial = ${r.liters}`,
+        detail: `Litros = final + (máximo ${r.meterMax} + 0.001) − inicial = ${r.liters}`,
         icon: 'alert',
         before: r.initialReading,
         after: r.finalReading,
@@ -185,11 +195,19 @@ export default function LecturaFinalScreen() {
     if (finales.length === 0) { toast.info('Sin cambios', 'Las lecturas finales ya estaban guardadas.'); return; }
     setGuardando(true);
     try {
-      await registrarFinales(finales);
-      toast.success('Lecturas finales guardadas', `${finales.length} dispensador${finales.length > 1 ? 'es' : ''}. El día sigue abierto.`);
+      await guardarFinales(finales);
     } catch (e) {
       console.error(e);
       toast.error('No se guardó', 'Revisa la conexión e intenta de nuevo.');
+      setGuardando(false);
+      return;
+    }
+    toast.success('Lecturas finales guardadas', `${finales.length} dispensador${finales.length > 1 ? 'es' : ''}. El día sigue abierto.`);
+    try {
+      await auditarFinales(finales);
+    } catch (e) {
+      console.error(e);
+      toast.warning('Guardado sin auditoría', 'Las lecturas se guardaron, pero no quedó el registro en la auditoría.');
     } finally {
       setGuardando(false);
     }
@@ -208,27 +226,45 @@ export default function LecturaFinalScreen() {
     // Mantenimiento: la final es la inicial (0 litros).
     const mant = rows.map(f => lecturaDe.get(f.id)).filter((r): r is DailyReading => !!r && r.status === 'mantenimiento' && r.finalReading === undefined)
       .map(r => ({ ...r, finalReading: r.initialReading, liters: 0, gallons: 0, total: 0, closedBy: autor, closedAt: ahora }));
+    const totalCierre = totals.m;
     try {
-      await registrarFinales(finales);
+      await guardarFinales(finales);
       if (mant.length > 0) await saveReadings(mant);
       await updateDayData({ status: 'cerrado', closedBy: autor, closedAt: ahora });
+    } catch (e) {
+      console.error(e);
+      toast.error('No se cerró el día', 'Revisa la conexión e intenta de nuevo.');
+      setConfirmOpen(false);
+      return;
+    }
+    toast.success('Día cerrado', `Resumen final guardado · ${fmtL(totalCierre)}`);
+    setConfirmOpen(false);
+    // Auditoría después de cambiar el estado: si falla, el día ya quedó cerrado.
+    try {
+      await auditarFinales(finales);
       await addAuditEntry({
         ...auditBase(),
         action: 'Cierre del día',
         target: fechaHN(today),
-        detail: `Total ${fmtL(totals.m)}`,
+        detail: `Total ${fmtL(totalCierre)}`,
         icon: 'lock',
       });
-      toast.success('Día cerrado', `Resumen final guardado · ${fmtL(totals.m)}`);
     } catch (e) {
       console.error(e);
-      toast.error('No se cerró el día', 'Revisa la conexión e intenta de nuevo.');
+      toast.warning('Cierre sin auditoría', 'El día se cerró, pero no quedó el registro en la auditoría.');
     }
-    setConfirmOpen(false);
   };
 
   const confirmarRollover = () => {
     if (!rolloverPide) return;
+    const l = litrosRollover(rolloverPide);
+    if (l === null || excedeTope(l)) {
+      toast.error('Vuelta a cero no plausible', l === null
+        ? 'Con esa inicial y final no hay vuelta a cero válida.'
+        : `Darían ${fmtNum(l, 3)} L (más de ${fmtNum(LITROS_MAX_DIA, 0)} L en un día). Revisa la lectura final.`);
+      setRolloverPide(null);
+      return;
+    }
     setRollEdits(s => ({ ...s, [rolloverPide.id]: true }));
     setRolloverPide(null);
   };
@@ -238,17 +274,28 @@ export default function LecturaFinalScreen() {
     return r && !isNaN(n) ? litrosEntre(r.initialReading, n, true, r.meterMax ?? f.meterMax) : null;
   };
 
+  const corrLectura = corr ? lecturaDe.get(corr.fila.id) : undefined;
+
   const guardarCorreccion = async () => {
     if (!corr || !puedeCerrar) return;
+    // Lectura vigente del contexto al confirmar: otra tablet pudo guardar la final mientras el modal estaba abierto.
+    const r = lecturaDe.get(corr.fila.id);
+    if (!r) { toast.error('Sin lectura', 'Ya no hay lectura de este dispensador hoy.'); return; }
     const n = parseFloat(corr.valor);
     if (corr.valor === '' || isNaN(n) || n < 0 || !/^\d*\.?\d*$/.test(corr.valor)) { toast.error('Valor inválido', 'Ingresa un número mayor o igual a cero.'); return; }
     if (corr.motivo.trim().length < MOTIVO_MIN) { toast.error('Falta el motivo', `Escribe el motivo de la corrección (mínimo ${MOTIVO_MIN} caracteres).`); return; }
-    const r = corr.reading;
+    if (corr.campo === 'final' && r.finalReading === undefined) { toast.error('Sin final', 'Esta lectura aún no tiene final guardada; regístrala con "Guardar".'); return; }
     const antes = corr.campo === 'inicial' ? r.initialReading : r.finalReading;
-    const nueva: DailyReading = corr.campo === 'inicial' ? { ...r, initialReading: n } : { ...r, finalReading: n };
+    const rollover = corr.campo === 'final' ? corr.rollover : r.rollover === true;
+    const nueva: DailyReading = corr.campo === 'inicial'
+      ? {
+        ...r, initialReading: n,
+        ...(r.previousFinal !== undefined ? { continuityBreak: rompeContinuidad(n, r.previousFinal) } : {}),
+      }
+      : { ...r, finalReading: n, rollover, ...(rollover ? { meterMax: r.meterMax ?? corr.fila.meterMax } : {}) };
     const v = calcVenta(nueva, currentPrices);
     if (nueva.finalReading !== undefined && v.estado === 'invalida') {
-      toast.error('Corrección inválida', 'La final quedaría menor a la inicial. Revisa el valor o marca la vuelta a cero.');
+      toast.error('Corrección inválida', msgInvalida(v));
       return;
     }
     const autor = appUser?.email || appUser?.name || 'unknown';
@@ -257,22 +304,32 @@ export default function LecturaFinalScreen() {
       : nueva;
     try {
       await saveReadings([upd]);
-      setEdits(s => { const x = { ...s }; delete x[r.dispenserId]; return x; });
-      await addAuditEntry({
-        ...auditBase(),
-        action: `Corrección de lectura ${corr.campo}`,
-        target: etiqueta(corr.fila),
-        detail: `${fechaHN(r.date)}${isClosed ? ' · día cerrado' : ''}`,
-        icon: 'edit',
-        before: antes ?? '',
-        after: n,
-        reason: corr.motivo.trim(),
-      });
-      toast.success('Lectura corregida', `${etiqueta(corr.fila)}: ${antes ?? '—'} → ${n}`);
-      setCorr(null);
     } catch (e) {
       console.error(e);
       toast.error('No se guardó', 'Revisa la conexión e intenta de nuevo.');
+      return;
+    }
+    setEdits(s => { const x = { ...s }; delete x[r.dispenserId]; return x; });
+    setRollEdits(s => { const x = { ...s }; delete x[r.dispenserId]; return x; });
+    toast.success('Lectura corregida', `${etiqueta(corr.fila)}: ${antes ?? '—'} → ${n}`);
+    const motivo = corr.motivo.trim();
+    const fila = corr.fila;
+    const campo = corr.campo;
+    setCorr(null);
+    try {
+      await addAuditEntry({
+        ...auditBase(),
+        action: `Corrección de lectura ${campo}`,
+        target: etiqueta(fila),
+        detail: `${fechaHN(r.date)}${isClosed ? ' · día cerrado' : ''}${campo === 'final' && rollover !== (r.rollover === true) ? (rollover ? ' · marcada vuelta a cero' : ' · quitada vuelta a cero') : ''}`,
+        icon: 'edit',
+        before: antes ?? '',
+        after: n,
+        reason: motivo,
+      });
+    } catch (e) {
+      console.error(e);
+      toast.warning('Corrección sin auditoría', 'La lectura se corrigió, pero no quedó el registro en la auditoría.');
     }
   };
 
@@ -382,7 +439,7 @@ export default function LecturaFinalScreen() {
                 const v = ventaDe(f);
                 const isMant = r?.status === 'mantenimiento';
                 const roll = rolloverDe(f.id);
-                const guardada = r?.finalReading !== undefined && edits[f.id] === undefined && rollEdits[f.id] === undefined;
+                const guardada = r?.finalReading !== undefined;
                 const invalida = v?.estado === 'invalida';
                 const ok = v?.estado === 'ok';
 
@@ -409,17 +466,21 @@ export default function LecturaFinalScreen() {
                             value={finalTxt(f.id)}
                             onChange={(e) => {
                               const val = e.target.value;
-                              if (/^\d*\.?\d*$/.test(val)) setEdits(s => ({ ...s, [f.id]: val }));
+                              if (!/^\d*\.?\d*$/.test(val)) return;
+                              setEdits(s => ({ ...s, [f.id]: val }));
+                              // Valor nuevo: la vuelta a cero marcada se vuelve a confirmar.
+                              setRollEdits(s => { if (s[f.id] === undefined) return s; const x = { ...s }; delete x[f.id]; return x; });
                             }}
-                            disabled={isClosed || !r}
+                            disabled={isClosed || !r || guardada}
+                            title={guardada ? (puedeCerrar ? 'Final guardada: cámbiala con Corregir (con motivo)' : 'Final guardada: solo quien puede cerrar el día la corrige') : undefined}
                             style={{
                               width: 120, padding: '6px 8px', textAlign: 'right',
                               fontFamily: 'ui-monospace, monospace', fontSize: 12, fontWeight: 700, color: '#0f172a',
-                              border: `1px solid ${invalida ? '#ef4444' : '#e2e8f0'}`, borderRadius: 7, background: isClosed || !r ? '#f8fafc' : 'white', outline: 'none',
+                              border: `1px solid ${invalida ? '#ef4444' : '#e2e8f0'}`, borderRadius: 7, background: isClosed || !r || guardada ? '#f8fafc' : 'white', outline: 'none',
                             }}
                           />
                           {guardada && !isClosed && <span style={{ fontSize: 10.5, color: '#16a34a' }}>Guardada</span>}
-                          {invalida && !roll && !isClosed && (
+                          {invalida && v?.motivo === 'menor' && !roll && !isClosed && !guardada && (
                             <button onClick={() => setRolloverPide(f)} style={{ fontSize: 10.5, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700 }}>
                               ¿Vuelta a cero?
                             </button>
@@ -427,7 +488,7 @@ export default function LecturaFinalScreen() {
                           {roll && (
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                               <Badge tone="info" icon="history">Vuelta a cero</Badge>
-                              {!isClosed && (
+                              {!isClosed && !guardada && (
                                 <button onClick={() => setRollEdits(s => ({ ...s, [f.id]: false }))} title="Quitar vuelta a cero" style={{ border: 0, background: 'transparent', cursor: 'pointer', color: '#64748b', padding: 0 }}>
                                   <Icon name="x" size={12}/>
                                 </button>
@@ -437,14 +498,14 @@ export default function LecturaFinalScreen() {
                         </div>
                       )}
                     </td>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: ok ? '#16a34a' : invalida ? '#dc2626' : '#94a3b8' }}>{ok ? `+${fmtNum(v.litros, 3)}` : invalida ? 'Final menor' : '-'}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: ok ? '#16a34a' : invalida ? '#dc2626' : '#94a3b8' }}>{ok ? `+${fmtNum(v.litros, 3)}` : invalida ? (v?.motivo === 'tope' ? `> ${fmtNum(LITROS_MAX_DIA, 0)} L` : 'Final menor') : '-'}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: '#475569' }}>{ok ? fmtNum(v.litros / LITERS_PER_GALLON, 2) : '-'}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: '#475569' }}>L. {(v?.precio ?? 0).toFixed(2)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 800, color: ok ? '#0f172a' : '#94a3b8' }}>{ok ? fmtL(v.total) : '-'}</td>
                     <td style={{ padding: '10px 8px', textAlign: 'right' }}>
                       {puedeCerrar && r && !isMant && (
                         <button
-                          onClick={() => setCorr({ reading: r, fila: f, campo: r.finalReading !== undefined ? 'final' : 'inicial', valor: '', motivo: '' })}
+                          onClick={() => setCorr({ fila: f, campo: r.finalReading !== undefined ? 'final' : 'inicial', valor: '', motivo: '', rollover: r.rollover === true })}
                           title="Corregir lectura (con motivo)"
                           style={{ border: '1px solid #e2e8f0', background: 'white', borderRadius: 7, width: 28, height: 28, cursor: 'pointer', display: 'inline-grid', placeItems: 'center', color: '#475569' }}
                         >
@@ -499,7 +560,7 @@ export default function LecturaFinalScreen() {
           const r = lecturaDe.get(rolloverPide.id);
           const max = r?.meterMax ?? rolloverPide.meterMax;
           const l = litrosRollover(rolloverPide);
-          return `${etiqueta(rolloverPide)}: litros = final + máximo del totalizador − inicial = ${finalTxt(rolloverPide.id)} + ${max} − ${r?.initialReading ?? 0} = ${l === null ? 'no válido' : fmtNum(l, 3)} L. Confírmalo solo si el contador pasó por cero; quedará en la auditoría.`;
+          return `${etiqueta(rolloverPide)}: litros = final + (máximo del totalizador + 0.001) − inicial = ${finalTxt(rolloverPide.id)} + ${round(max + METER_RESOLUCION, 3)} − ${r?.initialReading ?? 0} = ${l === null ? 'no válido' : fmtNum(l, 3)} L. Confírmalo solo si el contador pasó por cero; quedará en la auditoría.`;
         })() : ''}
         confirmLabel="Sí, vuelta a cero"
         icon="history"
@@ -511,7 +572,7 @@ export default function LecturaFinalScreen() {
         open={!!corr}
         onClose={() => setCorr(null)}
         title="Corregir lectura"
-        subtitle={corr ? `${etiqueta(corr.fila)} · ${fechaHN(corr.reading.date)}. El valor anterior, el nuevo y el motivo quedan en la auditoría.` : undefined}
+        subtitle={corr ? `${etiqueta(corr.fila)} · ${fechaHN(corrLectura?.date ?? today)}. El valor anterior, el nuevo y el motivo quedan en la auditoría.` : undefined}
         icon="edit"
         iconTone="warning"
         width={480}
@@ -520,25 +581,31 @@ export default function LecturaFinalScreen() {
           <Button variant="primary" icon="check" onClick={guardarCorreccion}>Guardar corrección</Button>
         </>}
       >
-        {corr && (
+        {corr && corrLectura && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div style={{ display: 'flex', gap: 6 }}>
               {(['inicial', 'final'] as const).map(c => (
                 <button key={c} onClick={() => setCorr({ ...corr, campo: c })}
-                  disabled={c === 'final' && corr.reading.finalReading === undefined}
+                  disabled={c === 'final' && corrLectura.finalReading === undefined}
                   style={{
                     flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 12, fontWeight: 700, fontFamily: 'inherit', border: 0,
-                    cursor: c === 'final' && corr.reading.finalReading === undefined ? 'not-allowed' : 'pointer',
+                    cursor: c === 'final' && corrLectura.finalReading === undefined ? 'not-allowed' : 'pointer',
                     background: corr.campo === c ? '#0f1f3d' : 'white', color: corr.campo === c ? 'white' : '#475569',
                     boxShadow: corr.campo === c ? 'none' : '0 0 0 1px #e2e8f0',
                   }}>Lectura {c}</button>
               ))}
             </div>
             <div style={{ fontSize: 12.5, color: '#475569' }}>
-              Valor actual: <b style={{ fontFamily: 'ui-monospace, monospace' }}>{(corr.campo === 'inicial' ? corr.reading.initialReading : corr.reading.finalReading)?.toString() ?? '—'}</b>
+              Valor actual: <b style={{ fontFamily: 'ui-monospace, monospace' }}>{(corr.campo === 'inicial' ? corrLectura.initialReading : corrLectura.finalReading)?.toString() ?? '—'}</b>
             </div>
             <TextField label="Valor correcto" prefix="L" suffix="ltrs" value={corr.valor} autoFocus
               onChange={val => { if (/^\d*\.?\d*$/.test(val)) setCorr({ ...corr, valor: val }); }} />
+            {corr.campo === 'final' && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: '#475569' }}>
+                <input type="checkbox" checked={corr.rollover} onChange={e => setCorr({ ...corr, rollover: e.target.checked })}/>
+                El totalizador dio la vuelta a cero
+              </label>
+            )}
             <TextField label="Motivo (obligatorio)" value={corr.motivo} placeholder="Ej.: error de digitación, foto del totalizador"
               onChange={val => setCorr({ ...corr, motivo: val })} />
           </div>
