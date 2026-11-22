@@ -29,7 +29,7 @@ const LECTURAS_PREVIAS = 120;
 const MOTIVO_MIN = 5;
 
 export default function LecturaInicialScreen() {
-  const { pumps, dayStatus, addAuditEntry, readings, createInitialReadings, preciosEn, today } = useApp();
+  const { pumps, dayStatus, addAuditEntry, readings, createInitialReadings, preciosEn, today, operacion } = useApp();
   const { appUser } = useAuth();
   const toast = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -170,7 +170,9 @@ export default function LecturaInicialScreen() {
     return !isNaN(n) && rompeContinuidad(n, previaDe(id)?.valor);
   };
 
-  const isClosed = dayStatus === 'cerrado';
+  // Con turnos activos las iniciales salen de la apertura de cada turno (pantalla Turnos): aquí solo se consulta.
+  const conTurnos = operacion.shiftsEnabled;
+  const isClosed = dayStatus === 'cerrado' || conTurnos;
   const completed = Object.values(values).filter(v => v.value !== '' && !isNaN(parseFloat(v.value)) && v.status === 'activo').length;
   const total = allDisp.filter(d => d.status === 'activo').length;
   const totalSuma = Object.values(values).reduce((acc, v) => acc + (parseFloat(v.value) || 0), 0);
@@ -344,6 +346,11 @@ export default function LecturaInicialScreen() {
           </div>
         </div>
       </Card>
+      {conTurnos && (
+        <div role="status" style={{ padding: '12px 16px', borderRadius: 12, background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e3a8a', fontSize: 13 }}>
+          <strong>Turnos activos:</strong> las lecturas se registran y corrigen por turno en la pantalla «Turnos». Aquí solo se consultan.
+        </div>
+      )}
 
       <div className="grid-cols-3">
         <div style={{ background: '#0f172a', borderRadius: 16, padding: 20, color: 'white', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
