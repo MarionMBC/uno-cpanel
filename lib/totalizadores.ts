@@ -119,7 +119,7 @@ export function litrosEntre(inicial: number, final: number, rollover = false, me
 /** Litros por encima del tope diario de una manguera (no plausibles). */
 export const excedeTope = (litros: number) => litros > LITROS_MAX_DIA;
 
-export type LecturaVenta = Pick<DailyReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax'>;
+export type LecturaVenta = Pick<DailyReading, 'fuelId' | 'fuelPrice' | 'initialReading' | 'finalReading' | 'status' | 'rollover' | 'meterMax' | 'tramos'>;
 
 export interface Venta {
   estado: 'ok' | 'pendiente' | 'invalida' | 'mantenimiento';
@@ -137,10 +137,24 @@ export function calcVenta(r: LecturaVenta, precios: PreciosPorLitro): Venta {
   const precio = Number.isFinite(r.fuelPrice) && r.fuelPrice > 0 ? r.fuelPrice : precios[r.fuelId] || 0;
   if (r.status === 'mantenimiento') return { estado: 'mantenimiento', litros: 0, precio, total: 0 };
   if (r.finalReading === undefined || r.finalReading === null || Number.isNaN(r.finalReading)) return { estado: 'pendiente', litros: 0, precio, total: 0 };
+  if (r.tramos && r.tramos.length > 0) return ventaPorTramos(r.tramos, precio);
   const litros = litrosEntre(r.initialReading, r.finalReading, r.rollover === true, r.meterMax ?? METER_MAX_DEFAULT);
   if (litros === null) return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'menor' };
   if (excedeTope(litros)) return { estado: 'invalida', litros: 0, precio, total: 0, motivo: 'tope' };
   return { estado: 'ok', litros, precio, total: round(litros * precio, 2) };
+}
+
+/**
+ * Venta de una lectura diaria con turnos: suma de tramos (cada uno redondeado a su precio, igual que
+ * el arqueo y el Excel de Turnos). Precio mostrado: el único si todos coinciden; si no, el promedio ponderado.
+ */
+function ventaPorTramos(tramos: { litros: number; precio: number }[], precioBase: number): Venta {
+  const litros = round(tramos.reduce((s, t) => s + t.litros, 0), 3);
+  if (excedeTope(litros)) return { estado: 'invalida', litros: 0, precio: precioBase, total: 0, motivo: 'tope' };
+  const total = round(tramos.reduce((s, t) => s + round(t.litros * t.precio, 2), 0), 2);
+  const unicos = new Set(tramos.map(t => t.precio));
+  const precio = unicos.size === 1 ? tramos[0].precio : litros > 0 ? round(total / litros, 2) : precioBase;
+  return { estado: 'ok', litros, precio, total };
 }
 
 /** Suma de ventas válidas (una lectura por dispensador). Dashboard y Lectura final usan esta suma. */

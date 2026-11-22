@@ -217,3 +217,26 @@ test('filasLecturaFinal: sin lectura, solo operables (bomba activa y dispensador
   ];
   assert.deepEqual(filasLecturaFinal(pumps, []).map(f => f.id), ['p1-A-1', 'p1-A-3']);
 });
+
+// ─── Lectura diaria con turnos: tramos (TASK-019, corrección tras review) ───
+test('calcVenta con tramos: suma cada tramo a su precio (varios turnos y corte de precio)', () => {
+  // T1 300 L a 34.05; T2 corte: 100 L a 34.05 y 150.5 L a 35.10. Final − inicial = 550.5 L.
+  const tramos = [{ litros: 300, precio: 34.05 }, { litros: 100, precio: 34.05 }, { litros: 150.5, precio: 35.1 }];
+  const v = calcVenta(lectura({ fuelId: 'diesel', fuelPrice: 34.05, initialReading: 1000, finalReading: 1550.5, tramos }), PRECIOS);
+  assert.equal(v.estado, 'ok');
+  assert.equal(v.litros, 550.5);
+  assert.equal(v.total, round2(10215 + 3405 + 5282.55));
+  assert.equal(v.precio, round2(v.total / v.litros));
+  // Mismo precio en todos los tramos: se muestra ese precio.
+  assert.equal(calcVenta(lectura({ fuelPrice: 34.05, finalReading: 600, tramos: [{ litros: 200, precio: 34.05 }, { litros: 300, precio: 34.05 }] }), PRECIOS).precio, 34.05);
+});
+
+test('calcVenta con tramos: sin final sigue pendiente, mantenimiento manda, tope aplica; sin tramos igual que antes', () => {
+  const tramos = [{ litros: 10, precio: 30 }];
+  assert.equal(calcVenta(lectura({ tramos }), PRECIOS).estado, 'pendiente');
+  assert.equal(calcVenta(lectura({ status: 'mantenimiento', finalReading: 200, tramos }), PRECIOS).estado, 'mantenimiento');
+  assert.equal(calcVenta(lectura({ finalReading: 200, tramos: [{ litros: LITROS_MAX_DIA + 1, precio: 30 }] }), PRECIOS).motivo, 'tope');
+  const sin = lectura({ fuelPrice: 34.05, finalReading: 200 });
+  assert.deepEqual(calcVenta({ ...sin, tramos: [] }, PRECIOS), calcVenta(sin, PRECIOS));
+  assert.deepEqual(sumarVentas([lectura({ finalReading: 200, tramos: [{ litros: 50, precio: 30 }, { litros: 50, precio: 31 }] })], PRECIOS), { litros: 100, total: 3050 });
+});

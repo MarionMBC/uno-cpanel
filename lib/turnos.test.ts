@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {
   bloqueoCierreDia, calcArqueo, calcVentaTurno, fechaDeTurno, idArqueo, idLecturaTurno, idTurno, inicialEncadenada,
   normalizarOperacion, OPERACION_DEFAULT, plantillaVigente, PLANTILLAS_DEFAULT, preciosCambiados, rompeCadena,
-  turnoAoa, validarArqueo, validarAsignaciones, validarPlantillas, ventasPorBombero,
+  tramosDiarios, turnoAoa, validarArqueo, validarAsignaciones, validarPlantillas, ventasPorBombero,
 } from './turnos.ts';
+import { calcVenta } from './totalizadores.ts';
 import type { Shift, ShiftReading } from '../types';
 
 const lectura = (over: Partial<ShiftReading> = {}): ShiftReading => ({
@@ -160,4 +161,28 @@ test('hoja Excel por turno trae lecturas, tramos y arqueo por bombero', () => {
   assert.ok(aoa.some(f => f[5] === 'TOTAL TURNO' && f[6] === 5155));
   assert.ok(aoa.some(f => String(f[0]).includes('tramo')));
   assert.ok(aoa.some(f => f[0] === 'Bombero 2' && f[6] === 'SIN ARQUEO'));
+});
+
+// ─── Corrección tras review: diaria = Σ turnos; correo seguro para el id del arqueo ───
+test('lectura diaria con tramos de los turnos cuadra con la venta de cada turno (cambio de precio entre turnos y corte)', () => {
+  const t1 = lectura({ shiftId: 'D_T1', initialReading: 1000, finalReading: 1200, fuelPrice: 34.05 });
+  const t2 = lectura({ shiftId: 'D_T2', initialReading: 1200, finalReading: 1450.25, fuelPrice: 35.1, cuts: [{ reading: 1300, fuelPrice: 34.5, at: '' }] });
+  const v1 = calcVentaTurno(t1, {}), v2 = calcVentaTurno(t2, {});
+  let tramos = tramosDiarios(undefined, 'D_T1', v1);
+  tramos = tramosDiarios(tramos, 'D_T2', v2);
+  // Cerrar dos veces el mismo turno no duplica tramos.
+  assert.deepEqual(tramosDiarios(tramos, 'D_T2', v2), tramos);
+  assert.equal(tramos.length, 3);
+  const diaria = calcVenta({ fuelId: 'diesel', fuelPrice: 34.05, initialReading: 1000, finalReading: 1450.25, status: 'activo', tramos }, {});
+  assert.equal(diaria.litros, 450.25);
+  assert.equal(diaria.total, Math.round((v1.total + v2.total) * 100) / 100);
+  // Sin tramos (legado) valoriza todo al precio de la lectura: distinto cuando hubo cambio de precio.
+  assert.notEqual(calcVenta({ fuelId: 'diesel', fuelPrice: 34.05, initialReading: 1000, finalReading: 1450.25, status: 'activo' }, {}).total, diaria.total);
+});
+
+test('correo del bombero: allowlist (no rompe el id del arqueo)', () => {
+  const a = (email: string) => validarAsignaciones(['p1-A-1'], [{ email, name: 'X', dispenserIds: ['p1-A-1'], cashFund: 0 }]);
+  assert.deepEqual(a('Juan.Perez+t1@uno.local'), []);
+  assert.ok(a('a/b@uno.local').some(e => e.includes('correo inválido')));
+  assert.ok(a('a@b').some(e => e.includes('correo inválido')));
 });

@@ -82,6 +82,16 @@ export default function TurnosScreen() {
     return () => { u1(); u2(); u3(); u4(); };
   }, [fecha]);
 
+  // Días operativos a los que irían los turnos que se pueden abrir ahora (hoy o, el nocturno, ayer).
+  const fechasApertura = [...new Set(operacion.shiftTemplates.map(p => fechaDeTurno(p, new Date(), operacion.timeZone)))].sort().join(',');
+  const [cerradosApertura, setCerradosApertura] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const unsubs = fechasApertura.split(',').filter(Boolean).map(f => onSnapshot(doc(db, 'dayStatus', f),
+      s => setCerradosApertura(c => ({ ...c, [f]: s.exists() && s.data().status === 'cerrado' })),
+      e => console.warn('dayStatus:', e.message)));
+    return () => unsubs.forEach(u => u());
+  }, [fechasApertura]);
+
   const datos = dia.fecha === fecha ? dia : { fecha, shifts: [], lecturas: [], arqueos: [] };
   const sel = datos.shifts.find(s => s.id === selId) ?? datos.shifts[datos.shifts.length - 1] ?? null;
   const lecturasSel = useMemo(() => (sel ? datos.lecturas.filter(r => r.shiftId === sel.id).sort((a, b) => a.dispenserId.localeCompare(b.dispenserId)) : []), [sel, datos.lecturas]);
@@ -115,6 +125,10 @@ export default function TurnosScreen() {
 
   const prepararApertura = async (plantilla: PlantillaTurno) => {
     const f = fechaDeTurno(plantilla, new Date(), operacion.timeZone);
+    if (cerradosApertura[f]) {
+      toast.error('Día cerrado', `El ${fechaHN(f)} está cerrado. Reábrelo (con motivo) para abrir un turno en él.`);
+      return;
+    }
     setOcupado(true);
     try {
       const [prev, diarias] = await Promise.all([
@@ -199,7 +213,7 @@ export default function TurnosScreen() {
     }
     setOcupado(true);
     try {
-      await cerrarTurno({ shift: t, autor, finales: ed.map(r => ({ dispenserId: r.dispenserId, finalReading: r.finalReading as number, rollover: r.rollover === true })) });
+      await cerrarTurno({ shift: t, autor, precios, finales: ed.map(r => ({ dispenserId: r.dispenserId, finalReading: r.finalReading as number, rollover: r.rollover === true })) });
       setFinales({}); setRolls({});
       const total = ed.reduce((s, r) => s + calcVentaTurno(r, precios).total, 0);
       toast.success('Turno cerrado', `${t.name} · ${fmtL(total)}. Falta el arqueo de cada bombero.`);
@@ -228,7 +242,7 @@ export default function TurnosScreen() {
     try {
       await cortarPrecio({
         shift: abierto, newPrices, autor,
-        cortes: lecturasCorte.map(r => ({ dispenserId: r.dispenserId, reading: num(corte[r.dispenserId]), oldPrice: r.fuelPrice, newPrice: precios[r.fuelId] })),
+        cortes: lecturasCorte.map(r => ({ dispenserId: r.dispenserId, reading: num(corte[r.dispenserId]), newPrice: precios[r.fuelId] })),
       });
       setCorte(null);
       toast.success('Corte de precio registrado', 'Los litros antes del corte quedan al precio anterior.');
@@ -263,6 +277,7 @@ export default function TurnosScreen() {
     const r = calcArqueo(vb?.total ?? 0, a.cashFund, d);
     const err = validarArqueo(d, r.difference, b.notes);
     if (sel.status !== 'cerrado' && recibir) err.push('Cierra el turno antes de recibir el arqueo.');
+    if (diaCerrado) err.push('El día está cerrado: reábrelo (con motivo) para cambiar el arqueo.');
     if (err.length > 0) { toast.error('Arqueo incompleto', err[0]); return; }
     const previo = arqueosSel.find(x => x.email === a.email);
     const ahora = new Date().toISOString();
@@ -351,13 +366,24 @@ export default function TurnosScreen() {
           </div>
           {puedeCerrar && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {!abierto && operacion.shiftTemplates.map(p => (
-                <Button key={p.id} variant={p.id === vigente?.id ? 'accent' : 'secondary'} icon="log-in" disabled={ocupado} onClick={() => prepararApertura(p)}>Abrir {p.name}</Button>
-              ))}
+              {!abierto && operacion.shiftTemplates.map(p => {
+                const f = fechaDeTurno(p, new Date(), operacion.timeZone);
+                const cerrado = cerradosApertura[f] === true;
+                return (
+                  <span key={p.id} title={cerrado ? `El día ${fechaHN(f)} está cerrado: reábrelo (con motivo) para abrir este turno.` : undefined}>
+                    <Button variant={p.id === vigente?.id ? 'accent' : 'secondary'} icon="log-in" disabled={ocupado || cerrado} onClick={() => prepararApertura(p)}>Abrir {p.name}</Button>
+                  </span>
+                );
+              })}
               {abierto && <Button variant="accent" icon="lock" disabled={ocupado} onClick={() => cerrar(abierto)}>Cerrar turno</Button>}
             </div>
           )}
         </div>
+        {!abierto && puedeCerrar && Object.entries(cerradosApertura).some(([f, c]) => c && fechasApertura.split(',').includes(f)) && (
+          <div style={{ fontSize: 12, color: '#fde68a', marginTop: 8 }}>
+            Día {fechasApertura.split(',').filter(f => cerradosApertura[f]).map(fechaHN).join(' y ')} cerrado: no se abren turnos en él. Para hacerlo, reabre el día (con motivo).
+          </div>
+        )}
       </Card>
 
       {abierto && cambiados.length > 0 && (
@@ -468,7 +494,7 @@ export default function TurnosScreen() {
               const d = { cash: num(b.cash || '0'), card: num(b.card || '0'), credits: num(b.credits || '0'), partialDrops: num(b.partialDrops || '0') };
               const r = calcArqueo(vb?.total ?? 0, a.cashFund, d);
               const c = arqueosSel.find(x => x.email === a.email);
-              const bloqueado = !!c?.receivedBy && !puedeCerrar;
+              const bloqueado = diaCerrado || (!!c?.receivedBy && !puedeCerrar);
               const set = (k: keyof ArqueoBorrador) => (val: string) => setArq(s => ({ ...s, [a.email]: { ...borradorDe(a.email), [k]: val } }));
               return (
                 <Card key={a.email}>
@@ -498,8 +524,9 @@ export default function TurnosScreen() {
                   {r.difference !== 0 && <TextField label="Motivo de la diferencia (obligatorio)" value={b.notes} onChange={set('notes')} disabled={bloqueado} />}
                   <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
                     {!bloqueado && <Button variant="secondary" size="sm" icon="check" disabled={ocupado} onClick={() => guardarArq(a, false)}>Guardar declaración</Button>}
-                    {puedeCerrar && <Button variant="primary" size="sm" icon="lock" disabled={ocupado || sel.status !== 'cerrado'} onClick={() => guardarArq(a, true)}>{c?.receivedBy ? 'Corregir y recibir' : 'Recibir arqueo'}</Button>}
+                    {puedeCerrar && !diaCerrado && <Button variant="primary" size="sm" icon="lock" disabled={ocupado || sel.status !== 'cerrado'} onClick={() => guardarArq(a, true)}>{c?.receivedBy ? 'Corregir y recibir' : 'Recibir arqueo'}</Button>}
                   </div>
+                  {diaCerrado && <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>Día cerrado: el arqueo no se modifica. Para corregirlo, reabre el día (con motivo).</div>}
                   {c?.receivedBy && <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>Recibido por {c.receivedBy} · {horaHN(c.receivedAt)}</div>}
                 </Card>
               );
