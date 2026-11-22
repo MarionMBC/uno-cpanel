@@ -74,6 +74,7 @@ export default function BombasScreen() {
   };
 
   const saveChanges = async () => {
+    if (pumpName.trim() === pump.name) { toast.info('Sin cambios', 'El nombre de la bomba no cambió.'); return; }
     const ok = await guardarBombas(pumps.map(p => p.id === pump.id ? { ...p, name: pumpName } : p), {
       action: 'Edición de bomba', target: pump.name, detail: 'Nombre de la bomba', icon: 'edit', before: pump.name, after: pumpName,
     });

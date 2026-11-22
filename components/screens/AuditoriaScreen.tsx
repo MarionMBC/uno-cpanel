@@ -25,8 +25,8 @@ export default function AuditoriaScreen() {
   const [filterAction, setFilterAction] = useState('');
   const [filterDate, setFilterDate] = useState('');
 
-  const users = useMemo(() => Array.from(new Set(auditLog.map(a => a.userName))).sort(), [auditLog]);
-  const actions = useMemo(() => Array.from(new Set(auditLog.map(a => a.action))).sort(), [auditLog]);
+  const users = useMemo(() => Array.from(new Set(auditLog.map(a => a.userName).filter(Boolean))).sort(), [auditLog]);
+  const actions = useMemo(() => Array.from(new Set(auditLog.map(a => a.action).filter(Boolean))).sort(), [auditLog]);
 
   const filtered = useMemo(
     () => filtrarAuditoria(auditLog, { fecha: filterDate || undefined, usuario: filterUser || undefined, accion: filterAction || undefined }),
